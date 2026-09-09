@@ -1,57 +1,38 @@
 # music-radio
 
-Radio algorítmica basada en "clima musical": un flujo continuo que mantiene
-una atmósfera sonora (melancólico, cálido, introspectivo…) en lugar de una
-playlist tradicional. El sistema construye y mantiene una secuencia coherente
-de canciones desde un conjunto de artistas semilla, con serendipia como
-característica, no como error.
+Radio en streaming basada en criterios de "clima musical". Mantiene un flujo
+continuo de canciones coherente con una atmósfera sonora configurable, a
+partir de un conjunto de artistas.
 
-Stack: Python (stdlib) + [Liquidsoap](https://www.liquidsoap.info/) +
-[Icecast2](https://icecast.org/) + `songs.json` como única base de datos.
+## Stack
 
-## Arquitectura
+- Python (stdlib) — Selección, ingesta y API
+- Liquidsoap — Reproducción y salida
+- Icecast2 — Streaming HTTP
+- `songs.json` — Base de datos del catálogo
 
-```
-songs.json          → catálogo (NO está en el repo: contiene derechos de emisión)
-  │
-  ▼
-selector.py         genera queue.m3u según el clima (clima.json)
-  │
-  ▼
-Queue (m3u)         ──►  Liquidsoap (radio.liq)  ──►  Icecast  (/radio)
-  │
-  ▼
-web_server.py       panel web de estado (web/index.html)
-```
+## Estructura
 
-Archivos clave:
+- `radio.liq` — Configuración de Liquidsoap (salida Icecast)
+- `scripts/selector.py` — Genera la cola de reproducción según clima
+- `scripts/catalog_manager.py` — Gestión del catálogo (CRUD)
+- `scripts/ingest.py` — Ingesta de pistas al catálogo
+- `scripts/fetch_jamendo.py` — Obtención de metadatos/acústica desde Jamendo
+- `scripts/start_radio.sh` — Lanza lector de cola + Liquidsoap + web
+- `web/index.html` — Panel de estado (sirve `web_server.py`)
 
-- `radio.liq` — configuración de Liquidsoap (emisión Icecast).
-- `scripts/selector.py` — selección de canciones según clima.
-- `scripts/catalog_manager.py` — gestión del catálogo.
-- `scripts/ingest.py` / `scripts/fetch_jamendo.py` — ingesta de música.
-- `scripts/start_radio.sh` — arranca lector de cola, Liquidsoap y web/API.
+## Flujo
 
-## Despliegue en el servidor
+1. `selector.py` lee `songs.json` y genera `queue.m3u` según `clima.json`.
+2. `radio.liq` reproduce `queue.m3u` y emite vía Icecast (mount `/radio`).
+3. `web_server.py` expone estado y control en `web/index.html`.
 
-El repositorio contiene solo el código. El catálogo con derechos de emisión
-(`songs.json`, `music/`) y los secretos (`.env`) se transfieren aparte, fuera
-de git:
+## Configuración
 
-```bash
-git clone git@github.com:ricmonmol/music-radio.git
-rsync -av songs.json music/ .env servidor:/ruta/a/radio/
-```
-
-En el servidor ajusta las rutas del directorio en los scripts y lanza:
-
-```bash
-./scripts/start_radio.sh
-```
-
-Las contraseñas del sistema (p. ej. Icecast) van en `.env`.
+- `clima.json` — Clima musical activo
+- `.env` — Credenciales (p. ej. `ICE_PASSWORD`) y API keys. No se versiona.
 
 ## Licencia
 
-MIT. El software es libre; el contenido musical con derechos de emisión no se
-distribuye desde este repositorio.
+MIT — ver `LICENSE`.
+

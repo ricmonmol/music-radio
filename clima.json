@@ -1,0 +1,9 @@
+{
+  "mood": ["intimo", "melancolico", "suave"],
+  "texture": "organica",
+  "energy": 0.35,
+  "complexity": 0.45,
+  "voice": "voz-intima",
+  "instrumentation": ["guitarra", "cuerdas", "piano"],
+  "temporalidad": "contemporaneo"
+}

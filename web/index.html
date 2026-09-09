@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Radio algorítmica — clima musical</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        background: #111;
+        color: #ddd;
+        max-width: 44rem;
+        margin: 0 auto;
+        padding: 0 1rem;
+      }
+      .player {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        margin-top: 1.5rem;
+      }
+      .player button {
+        flex: 0 0 auto;
+        background: #1e3;
+        color: #032;
+        border: 0;
+        border-radius: 0.4rem;
+        padding: 0.7rem 1.4rem;
+        font-weight: 600;
+        cursor: pointer;
+        font-size: 1rem;
+      }
+      .player button:hover {
+        background: #2f5;
+      }
+      .player .state {
+        color: #4a4;
+        font-size: 0.85rem;
+      }
+      .card {
+        border: 1px solid #333;
+        border-radius: 0.5rem;
+        padding: 1rem;
+        margin: 1.5rem 0;
+      }
+      .card h2 {
+        font-size: 1rem;
+        color: #aaa;
+        margin-top: 0;
+      }
+      #np .song {
+        color: #fff;
+        font-weight: 600;
+        font-size: 1.05rem;
+      }
+      #np .album {
+        color: #bbb;
+        font-size: 0.9rem;
+        margin-top: 0.15rem;
+      }
+      .attr {
+        color: #999;
+        font-size: 0.85rem;
+        margin-top: 0.35rem;
+      }
+      .attr a {
+        color: #7db;
+      }
+      .empty {
+        color: #666;
+        font-style: italic;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="player">
+      <button id="playBtn">Pausar</button>
+      <span class="state" id="state">En vivo</span>
+      <audio
+        id="radio"
+        autoplay
+        preload="none"
+        src="http://localhost:8000/radio"
+      ></audio>
+    </div>
+
+    <div class="card">
+      <h2>Now playing</h2>
+      <div id="np"><p class="empty">Sin tema aún…</p></div>
+    </div>
+
+    <script>
+      function esc(s) {
+        return String(s == null ? "" : s)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      var radio = document.getElementById("radio");
+      var playBtn = document.getElementById("playBtn");
+      var stateEl = document.getElementById("state");
+
+      function tick() {
+        playBtn.textContent = radio.paused ? "Escuchar" : "Pausar";
+      }
+      radio.addEventListener("play", tick);
+      radio.addEventListener("pause", tick);
+      radio.addEventListener("error", function () {
+        stateEl.textContent = "Sin conexión con el stream…";
+      });
+      playBtn.addEventListener("click", function () {
+        if (radio.paused) {
+          radio.play().catch(function () {
+            stateEl.textContent =
+              "Bloqueado por el navegador: toca Escuchar para arrancar.";
+          });
+        } else {
+          radio.pause();
+        }
+      });
+      radio.addEventListener("seeking", function () {
+        radio.currentTime = 0;
+      });
+      setInterval(tick, 2000);
+      tick();
+
+      async function load() {
+        try {
+          const np = await fetch("/now").then((r) => r.json());
+          const el = document.getElementById("np");
+          if (!np || !np.title) {
+            el.innerHTML = '<p class="empty">Sin tema aún…</p>';
+          } else {
+            const att = [];
+            if (np.license_url) {
+              att.push(
+                '<a href="' +
+                  esc(np.license_url) +
+                  '" target="_blank" rel="noopener">' +
+                  esc((np.license || "").toUpperCase()) +
+                  "</a>",
+              );
+            } else if (np.license) {
+              att.push(esc(np.license.toUpperCase()));
+            }
+            if (np.track_url) {
+              att.push(
+                '<a href="' +
+                  esc(np.track_url) +
+                  '" target="_blank" rel="noopener">ver tema original</a>',
+              );
+            }
+            el.innerHTML =
+              '<div class="song">' +
+              esc(np.title || "?") +
+              "</div>" +
+              (np.album
+                ? '<div class="album">' + esc(np.album) + "</div>"
+                : "") +
+              '<div class="attr">' +
+              esc(np.artist || "?") +
+              (att.length ? " · " + att.join(" · ") : "") +
+              "</div>";
+          }
+        } catch (e) {
+          document.getElementById("np").innerHTML =
+            '<p class="empty">No responde la API (/now).</p>';
+        }
+      }
+      load();
+      setInterval(load, 15000);
+    </script>
+  </body>
+</html>
+

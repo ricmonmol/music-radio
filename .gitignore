@@ -1,0 +1,11 @@
+music/
+songs.json
+queue.m3u
+logs/
+data/
+venv/
+.env
+scripts/.jamendo_client
+__pycache__/
+*.pyc
+liquidsoap.pid

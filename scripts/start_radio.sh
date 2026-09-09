@@ -2,7 +2,7 @@
 # Arranca la radio: genera la cola inicial y lanza Liquidsoap y el panel web
 # desacoplados.
 set -e
-cd /home/ricardo/Descargas/radio/radio
+cd "$(dirname "$0")/.."
 
 PIDFILE="liquidsoap.pid"
 

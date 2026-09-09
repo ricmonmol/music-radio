@@ -3,7 +3,7 @@
 # Ya no es necesario para el ciclo normal (reload_mode="watch" en radio.liq
 # recarga queue.m3u automáticamente). Útil solo para cambios de configuración.
 set -e
-cd /home/ricardo/Descargas/radio/radio
+cd "$(dirname "$0")/.."
 
 PIDFILE="liquidsoap.pid"
 

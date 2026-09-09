@@ -1,7 +1,7 @@
 #!/bin/bash
 # Rota/trunca los logs para evitar crecimiento ilimitado.
 set -euo pipefail
-cd /home/ricardo/Descargas/radio/radio
+cd "$(dirname "$0")/.."
 
 MAX_LINES=2000
 LOG_DIR="logs"

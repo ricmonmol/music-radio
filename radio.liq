@@ -1,10 +1,9 @@
 set("log.stdout", true)
 set("log.level", 3)
 
-radio_dir = "/home/ricardo/Descargas/radio/radio"
-queue_file = radio_dir ^ "/queue.m3u"
-played_file = radio_dir ^ "/logs/played.txt"
-nowplaying_file = radio_dir ^ "/logs/nowplaying.txt"
+queue_file = "queue.m3u"
+played_file = "logs/played.txt"
+nowplaying_file = "logs/nowplaying.txt"
 
 play_src = playlist(mode="normal", reload_mode="watch", queue_file)
 
@@ -28,11 +27,16 @@ queue = source.on_track(play_src, log_track)
 
 stream = mksafe(queue)
 
+def env_or(k, d) =
+  l = get_process_lines("sh -c 'echo -n \"$" ^ k ^ "\"'")
+  if list.length(l) == 0 then d else list.hd(l) end
+end
+
 output.icecast(
   mount = "/radio",
   host = "localhost",
   port = 8000,
-  password = "hackmeuma",
+  password = env_or("ICE_PASSWORD", "hackmeuma"),
   name = "Radio algorítmica",
   description = "Radio basada en clima musical",
   genre = "indie",

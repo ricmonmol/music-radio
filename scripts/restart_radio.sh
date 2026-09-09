@@ -4,6 +4,9 @@
 # recarga queue.m3u automáticamente). Útil solo para cambios de configuración.
 set -e
 cd "$(dirname "$0")/.."
+set -a
+. ./.env
+set +a
 
 PIDFILE="liquidsoap.pid"
 

@@ -23,9 +23,9 @@ def log_track(m) =
   write_nowplaying(m)
 end
 
-queue = source.on_track(play_src, log_track)
+play_src.on_track(synchronous=true, log_track)
 
-stream = mksafe(queue)
+stream = mksafe(play_src)
 
 def env_or(k, d) =
   l = get_process_lines("sh -c 'echo -n \"$" ^ k ^ "\"'")

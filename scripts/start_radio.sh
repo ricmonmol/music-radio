@@ -21,7 +21,7 @@ fi
 liquidsoap radio.liq >> logs/liquidsoap.out 2>&1 < /dev/null &
 echo "$!" > "$PIDFILE"
 LPID=$!
-setsid nohup ./venv/bin/python scripts/web_server.py >> logs/web.out 2>&1 < /dev/null &
+setsid nohup ./venv/bin/python scripts/web_server.py --host 0.0.0.0 >> logs/web.out 2>&1 < /dev/null &
 WPID=$!
 echo "Liquidsoap lanzado (PID $LPID). Stream en http://localhost:8000/radio"
 echo "Web/API lanzada (PID $WPID). Interfaz en http://localhost:8080"

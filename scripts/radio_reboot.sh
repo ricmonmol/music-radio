@@ -24,9 +24,14 @@ echo "== radio_reboot =="
 
 # 1) Pre-flight
 command -v liquidsoap >/dev/null || { echo "Falta liquidsoap." >&2; exit 1; }
-command -v ffprobe >/dev/null || { echo "Falta ffprobe." >&2; exit 1; }
 [ -x venv/bin/python ] || { echo "Falta venv/. Corré: python3 -m venv venv" >&2; exit 1; }
 [ -f .env ] || { echo "Falta .env con ICE_PASSWORD." >&2; exit 1; }
+if ! command -v ffprobe >/dev/null; then
+    echo "AVISO: ffprobe no está. Se omite la ingesta local (solo afecta MP3 propios)."
+    HAS_FFPROBE=0
+else
+    HAS_FFPROBE=1
+fi
 
 # 2) Rotar logs (evita crecimiento infinito)
 scripts/cleanup_logs.sh || true
@@ -41,9 +46,13 @@ else
     echo "   --auto N para forzar descarga de N temas."
 fi
 
-# 4) Ingesta de MP3 locales nuevos (idempotente)
-echo "2) Ingesta de música local (music/ -> songs.json)..."
-./venv/bin/python scripts/ingest.py --license cc-by-nc || true
+# 4) Ingesta de MP3 locales nuevos (idempotente; requiere ffprobe)
+if [ "$HAS_FFPROBE" -eq 1 ]; then
+    echo "2) Ingesta de música local (music/ -> songs.json)..."
+    ./venv/bin/python scripts/ingest.py --license cc-by-nc || true
+else
+    echo "2) Ingesta local omitida (falta ffprobe). Caso: sudo apt install -y ffmpeg"
+fi
 
 # 5) Regenerar cola (con recuperación si queda en 0)
 gen_queue() {

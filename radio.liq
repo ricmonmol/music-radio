@@ -14,16 +14,25 @@ def write_nowplaying(m) =
   file.write(data=(fname ^ "|" ^ artist ^ " — " ^ title), nowplaying_file)
 end
 
+last_played_fname = ref("")
+
 def log_track(m) =
   fname = if m["filename"] != "" then m["filename"] else "?" end
   title = if m["title"] != "" then m["title"] else "?" end
   artist = if m["artist"] != "" then m["artist"] else "?" end
-  line = fname ^ "|" ^ artist ^ " — " ^ title ^ "\n"
-  file.write(data=line, append=true, played_file)
-  write_nowplaying(m)
+  # El playlist on_track puede dispararse varias veces por el mismo track
+  # (carga inicial / reload de queue.m3u); se ignora el duplicado consecutivo.
+  if fname == !last_played_fname then
+    ()
+  else
+    last_played_fname := fname
+    line = fname ^ "|" ^ artist ^ " — " ^ title ^ "\n"
+    file.write(data=line, append=true, played_file)
+    write_nowplaying(m)
+  end
 end
 
-play_src.on_track(synchronous=true, log_track)
+play_src.on_track(log_track)
 
 stream = mksafe(play_src)
 

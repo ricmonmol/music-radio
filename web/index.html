@@ -71,6 +71,29 @@
         color: #666;
         font-style: italic;
       }
+      .hist {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      .hist li {
+        padding: 0.5rem 0;
+        border-top: 1px solid #262626;
+      }
+      .hist li:first-child {
+        border-top: 0;
+      }
+      .hist .song {
+        color: #eee;
+      }
+      .hist .meta {
+        color: #888;
+        font-size: 0.82rem;
+        margin-top: 0.15rem;
+      }
+      .hist a {
+        color: #7db;
+      }
     </style>
   </head>
   <body>
@@ -81,13 +104,18 @@
         id="radio"
         autoplay
         preload="none"
-        src="http://localhost:8000/radio"
+        src="/radio"
       ></audio>
     </div>
 
     <div class="card">
       <h2>Now playing</h2>
       <div id="np"><p class="empty">Sin tema aún…</p></div>
+    </div>
+
+    <div class="card">
+      <h2>Historial · últimas escuchadas</h2>
+      <div id="hist"><p class="empty">Cargando…</p></div>
     </div>
 
     <script>
@@ -173,6 +201,51 @@
       }
       load();
       setInterval(load, 15000);
+
+      async function loadHistory() {
+        const el = document.getElementById("hist");
+        try {
+          const items = await fetch("/history?n=5").then((r) => r.json());
+          if (!items || !items.length) {
+            el.innerHTML = '<p class="empty">Sin historial todavía.</p>';
+            return;
+          }
+          const lis = items
+            .map(function (it) {
+              const title = it.title || it.label || "?";
+              const meta = [];
+              const who = esc(it.artist || it.album || "");
+              if (it.license) meta.push(esc(it.license.toUpperCase()));
+              if (it.track_url) {
+                meta.push(
+                  '<a href="' +
+                    esc(it.track_url) +
+                    '" target="_blank" rel="noopener">fuente</a>',
+                );
+              }
+              return (
+                "<li>" +
+                "<span>" +
+                (it.track_url
+                  ? '<a href="' + esc(it.track_url) + '" target="_blank" rel="noopener">' +
+                    esc(title) + "</a>"
+                  : esc(title)) +
+                "</span>" +
+                (who ? '<div class="meta">' + who + "</div>" : "") +
+                (meta.length
+                  ? '<div class="meta">' + meta.join(" · ") + "</div>"
+                  : "") +
+                "</li>"
+              );
+            })
+            .join("");
+          el.innerHTML = '<ul class="hist">' + lis + "</ul>";
+        } catch (e) {
+          el.innerHTML = '<p class="empty">No responde la API (/history).</p>';
+        }
+      }
+      loadHistory();
+      setInterval(loadHistory, 30000);
     </script>
   </body>
 </html>

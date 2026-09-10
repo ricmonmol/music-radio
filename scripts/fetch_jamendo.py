@@ -29,7 +29,6 @@ CCBY-NC(-SA) / CC0; se descartan CC-BY-ND y 'download-only'.
 import argparse
 import html
 import json
-import os
 import re
 import sys
 import time
@@ -37,14 +36,15 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lib import PROJECT_ROOT  # noqa: E402
+from lib import get_client_id, load_json, save_json  # noqa: E402
+
 API = "https://api.jamendo.com/v3.0/tracks/"
 SEEN_PATH = PROJECT_ROOT / "data" / "jamendo_seen.json"
 
 # Licencias que el selector puede emitir (EMIT_LICENSES)
-EMIT_LICENSES = {
-    "cc0", "public-domain", "cc-by", "cc-by-sa", "cc-by-nc", "permission",
-}
+from lib import EMIT_LICENSES  # noqa: E402
 # (clave en license_ccurl -> nombre corto)
 LICENSE_MAP = {
     "by-nc-sa": "cc-by-nc",
@@ -73,18 +73,11 @@ USER_AGENT = "radio-algoritmica/0.9 (proyecto clima musical)"
 
 
 def load_songs(path):
-    if Path(path).exists():
-        try:
-            data = Path(path).read_text(encoding="utf-8")
-            return json.loads(data) if data.strip() else []
-        except json.JSONDecodeError:
-            return []
-    return []
+    return load_json(path)
 
 
 def save_songs(path, songs):
-    Path(path).write_text(
-        json.dumps(songs, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    save_json(path, songs)
 
 
 def load_seen():
@@ -241,14 +234,29 @@ def download_track(client_id, t, out_root):
     rel = Path("music") / artist / album / f"{title} - {t.get('id')}.mp3"
     dest = out_root.parent / rel
     dest.parent.mkdir(parents=True, exist_ok=True)
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=120) as r, open(dest, "wb") as fh:
-        while True:
-            chunk = r.read(65536)
-            if not chunk:
-                break
-            fh.write(chunk)
-    return rel
+    tmp_dest = dest.with_suffix(".mp3.part")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=120) as r, open(tmp_dest, "wb") as fh:
+            while True:
+                chunk = r.read(65536)
+                if not chunk:
+                    break
+                fh.write(chunk)
+        if tmp_dest.exists() and tmp_dest.stat().st_size > 1024:
+            tmp_dest.replace(dest)
+            return rel
+        if tmp_dest.exists():
+            tmp_dest.unlink()
+        return None
+    except Exception:
+        if tmp_dest.exists():
+            try:
+                tmp_dest.unlink()
+            except OSError:
+                pass
+        return None
+
 
 
 def build_params(args, limit, offset=0):
@@ -480,8 +488,8 @@ def cmd_batch(args):
 def main():
     ap = argparse.ArgumentParser(
         description="Descubre/descarga música emisible de Jamendo (API v3)")
-    ap.add_argument("--client-id", default=os.environ.get("JAMENDO_CLIENT_ID"),
-                    help="Client ID de devportal.jamendo.com (o env JAMENDO_CLIENT_ID)")
+    ap.add_argument("--client-id", default=None,
+                    help="Client ID de devportal.jamendo.com (o env JAMENDO_CLIENT_ID / scripts/.jamendo_client)")
     ap.add_argument("--songs", default=str(PROJECT_ROOT / "songs.json"))
     ap.add_argument("--music", default=str(PROJECT_ROOT / "music"))
     ap.add_argument("--limit", type=int, default=15)
@@ -513,7 +521,10 @@ def main():
     args = ap.parse_args()
 
     if not args.client_id:
-        print("Falta el client_id de Jamendo (--client-id o env JAMENDO_CLIENT_ID). "
+        args.client_id = get_client_id()
+    if not args.client_id:
+        print("Falta el client_id de Jamendo (--client-id, env "
+              "JAMENDO_CLIENT_ID o scripts/.jamendo_client). "
               "Consíguelo en https://devportal.jamendo.com", file=sys.stderr)
         return 1
     if args.tags:

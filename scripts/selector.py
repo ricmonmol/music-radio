@@ -19,10 +19,11 @@ import random
 import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-EMIT_LICENSES = {
-    "cc0", "public-domain", "cc-by", "cc-by-sa", "cc-by-nc", "permission",
-}
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lib import PROJECT_ROOT, load_json, save_json  # noqa: E402
+
+from lib import EMIT_LICENSES  # noqa: E402
+
 WEIGHTS = {
     "similarity": 0.35,
     "diversity": 0.25,
@@ -39,24 +40,6 @@ DEFAULT_MAX_PLAYS = 3
 AFFINITY_THRESHOLD = 0.7
 AFFINITY_GAP_WINDOW = 5
 MIN_EFFECTIVE_GAP = 2
-
-
-def load_json(path):
-    p = Path(path)
-    if not p.exists():
-        return []
-    try:
-        data = p.read_text(encoding="utf-8")
-        return json.loads(data) if data.strip() else []
-    except json.JSONDecodeError:
-        return []
-
-
-def save_json(path, data):
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-                 encoding="utf-8")
 
 
 def atomic_write(path, text):
@@ -244,6 +227,14 @@ def main():
         chosen_ids.add(chosen_s["id"])
         queue.append(chosen_s)
         recent_artists = (recent_artists + [chosen_s.get("artist")])[-NO_REPEAT_ARTIST:]
+
+    # Rescate: si la cola quedó vacía porque todas las canciones alcanzaron max_plays,
+    # relajar restricciones eligiendo las menos reproducidas para no dejar la radio en silencio.
+    if not queue and songs:
+        rescue = sorted(songs, key=lambda s: counts.get(s["id"], 0))
+        for s in rescue[:args.window]:
+            queue.append(s)
+            chosen_ids.add(s["id"])
 
     lines = ["#EXTM3U"]
     diario = []

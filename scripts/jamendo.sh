@@ -10,6 +10,8 @@
 # El client id se guarda una vez en scripts/.jamendo_client (local, chmod 600).
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/bash_utils.sh
+source scripts/bash_utils.sh
 
 PY="venv/bin/python"
 SCRIPT="scripts/fetch_jamendo.py"
@@ -28,9 +30,8 @@ SPEED="low,medium"
 MAXDIST="0.4"
 
 # ---------- client id ----------
-if [[ -f "$CRED" ]]; then
-  CID="$(cat "$CRED")"
-else
+CID="$(get_client_id)"
+if [[ -z "$CID" ]]; then
   read -r -p "Client id de Jamendo (devportal.jamendo.com): " CID
   if [[ -z "${CID// /}" ]]; then
     echo "Sin client id, no se puede continuar." >&2
@@ -55,7 +56,7 @@ list() {
 }
 
 usar_selector() {
-  "$PY" scripts/selector.py --clima "$CLIMA" || true
+  run_selector "$CLIMA" || true
   bash scripts/restart_radio.sh
   echo "Cola regenerada y radio reiniciada."
 }

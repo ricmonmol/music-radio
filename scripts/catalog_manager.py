@@ -16,25 +16,30 @@ lotes grandes, no de a una).
 """
 import argparse
 import json
-import os
 import shutil
-import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-SCRIPTS_DIR = PROJECT_ROOT / "scripts"
-SONGS_PATH = PROJECT_ROOT / "songs.json"
-PLAYED_PATH = PROJECT_ROOT / "logs" / "played.txt"
-QUEUE_PATH = PROJECT_ROOT / "queue.m3u"
-CLIMA_PATH = PROJECT_ROOT / "clima.json"
-META_PATH = PROJECT_ROOT / "data" / "catalog_meta.json"
-ARCHIVE_DIR = PROJECT_ROOT / "archive"
-MUSIC_DIR = PROJECT_ROOT / "music"
-CLIENT_FILE = SCRIPTS_DIR / ".jamendo_client"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lib import (  # noqa: E402
+    ARCHIVE_DIR,
+    CLIMA_PATH,
+    EMIT_LICENSES,
+    META_PATH,
+    MUSIC_DIR,
+    PLAYED_PATH,
+    PROJECT_ROOT,
+    QUEUE_PATH,
+    SONGS_PATH,
+    get_client_id,
+    load_json,
+    now_iso,
+    restart_liquidsoap,
+    run_selector,
+    save_json,
+)
 
-sys.path.insert(0, str(SCRIPTS_DIR))
 import fetch_jamendo  # noqa: E402
 
 DEFAULT_META = {
@@ -44,24 +49,6 @@ DEFAULT_META = {
     "total_archived": 0,
     "batch_count": 0,
 }
-
-
-def load_json(path):
-    p = Path(path)
-    if not p.exists():
-        return []
-    try:
-        data = p.read_text(encoding="utf-8")
-        return json.loads(data) if data.strip() else []
-    except json.JSONDecodeError:
-        return []
-
-
-def save_json(path, data):
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-                 encoding="utf-8")
 
 
 def load_meta():
@@ -79,21 +66,11 @@ def save_meta(meta):
 
 
 def client_id():
-    if os.environ.get("JAMENDO_CLIENT_ID"):
-        return os.environ["JAMENDO_CLIENT_ID"]
-    if CLIENT_FILE.exists():
-        token = CLIENT_FILE.read_text(encoding="utf-8").strip()
-        if token:
-            return token
-    return None
-
-
-def now_iso():
-    return datetime.now().isoformat(timespec="seconds")
+    return get_client_id()
 
 
 def emisible(songs):
-    return [s for s in songs if s.get("license") in fetch_jamendo.EMIT_LICENSES]
+    return [s for s in songs if s.get("license") in EMIT_LICENSES]
 
 
 def read_played_counts():
@@ -137,21 +114,10 @@ def queue_paths():
 
 
 def regenerate_queue():
-    cmd = [str(PROJECT_ROOT / "venv" / "bin" / "python"),
-           str(SCRIPTS_DIR / "selector.py"),
-           "--clima", str(CLIMA_PATH)]
-    res = subprocess.run(cmd, capture_output=True, text=True)
-    lines = (res.stdout or "").strip().splitlines()
-    print("\n".join(lines))
-    if res.returncode != 0:
-        print(res.stderr, file=sys.stderr)
-    else:
-        restart_radio()
-
-
-def restart_radio():
-    subprocess.run(["bash", str(SCRIPTS_DIR / "restart_radio.sh")],
-                   check=False)
+    count = run_selector(str(CLIMA_PATH))
+    if count >= 0:
+        restart_liquidsoap()
+    return count
 
 
 def log(msg):
@@ -275,7 +241,7 @@ def cmd_rotate(args):
         return 0
 
     queued = queue_paths()
-    n_archive = len(songs) - args.keep
+    counts, _ = read_played_counts()
     candidates = []
     for s in songs:
         try:
@@ -285,11 +251,15 @@ def cmd_rotate(args):
         if resolved in queued:
             continue
         candidates.append(s)
+    # Priorizar archivar las que más veces se reprodujeron
+    candidates.sort(key=lambda s: counts.get(s["id"], 0), reverse=True)
+    n_archive = len(songs) - args.keep
     if len(candidates) < n_archive:
         print(f"Solo {len(candidates)} candidatas fuera de la cola actual; "
               f"se archivarán esa cantidad en lugar de {n_archive}.")
         n_archive = len(candidates)
-    to_archive = candidates[-n_archive:] if n_archive else []
+    to_archive = candidates[:n_archive] if n_archive else []
+
 
     ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
     archived_paths = {}
@@ -341,20 +311,44 @@ def cmd_auto(args):
     songs = load_json(SONGS_PATH)
     emit = emisible(songs)
     n = len(emit)
-    log(f"auto: catálogo con {n} canciones "
-        f"(min {args.min_songs}, max {args.max_songs})")
+    counts, _ = read_played_counts()
+    played_distinct = len([s for s in emit if s["id"] in counts])
+    unplayed = n - played_distinct
+    played_ratio = (played_distinct / n) if n else 1.0
+
+    log(f"auto: catálogo con {n} canciones ({played_distinct} reproducidas, {played_ratio*100:.0f}%), "
+        f"min {args.min_songs}, max {args.max_songs}")
+
+    # Condición 1: Catálogo insuficiente
     if n < args.min_songs:
         bsize = min(args.batch_size, args.min_songs - n + 10)
-        log(f"auto: bajo de mínimo, descargando lote de {bsize}")
+        log(f"auto: bajo de mínimo ({n} < {args.min_songs}), descargando lote de {bsize}")
         rargs = argparse.Namespace(**vars(args))
         rargs.batch_size = bsize
         return cmd_refresh(rargs)
+
+    # Condición 2: Se escuchó la gran mayoría de la música (refresh cíclico)
+    played_threshold = getattr(args, "played_threshold", 0.85)
+    unplayed_min = getattr(args, "unplayed_min", 8)
+    if played_ratio >= played_threshold or unplayed <= unplayed_min:
+        log(f"auto: música escuchada ({played_distinct}/{n}, {played_ratio*100:.0f}%). "
+            f"Rotando canciones escuchadas y descargando nuevo lote de Jamendo...")
+        keep = max(5, unplayed)
+        cmd_rotate(argparse.Namespace(keep=keep, keep_played=False, dry_run=args.dry_run))
+        rargs = argparse.Namespace(**vars(args))
+        rargs.batch_size = args.batch_size
+        return cmd_refresh(rargs)
+
+    # Condición 3: Catálogo superó el máximo
     if n > args.max_songs:
         keep = args.max_songs // 2
         log(f"auto: sobre el máximo, rotando a {keep}")
         return cmd_rotate(argparse.Namespace(keep=keep, keep_played=False,
                                              dry_run=args.dry_run))
-    log("auto: catálogo en rango, no se hace nada.")
+
+    # Catálogo en rango y con música fresca: asegurar que la cola esté activa
+    log(f"auto: catálogo en rango con {unplayed} temas frescos. Regenerando cola...")
+    regenerate_queue()
     return 0
 
 
@@ -375,17 +369,21 @@ def main():
 
     p_rotate = sub.add_parser("rotate", help="archiva canciones viejas")
     p_rotate.add_argument("--keep", type=int, default=30,
-                          help="cuántas canciones dejar en songs.json (default 30)")
+                           help="cuántas canciones dejar en songs.json (default 30)")
     p_rotate.add_argument("--keep-played", action="store_true",
-                          help="no limpiar logs/played.txt")
+                           help="no limpiar logs/played.txt")
     p_rotate.add_argument("--dry-run", action="store_true",
-                          help="solo mostrar qué se archivaría")
+                           help="solo mostrar qué se archivaría")
     p_rotate.set_defaults(func=cmd_rotate)
 
     p_auto = sub.add_parser("auto", help="decide refresh/rotate por thresholds")
     p_auto.add_argument("--min-songs", type=int, default=30)
     p_auto.add_argument("--max-songs", type=int, default=200)
     p_auto.add_argument("--batch-size", type=int, default=80)
+    p_auto.add_argument("--played-threshold", type=float, default=0.85,
+                        help="ratio de temas reproducidos para rotar y descargar de Jamendo (default 0.85)")
+    p_auto.add_argument("--unplayed-min", type=int, default=8,
+                        help="mínimo de temas frescos sin reproducir antes de refresh (default 8)")
     p_auto.add_argument("--dry-run", action="store_true")
     add_fetch_args(p_auto)
     p_auto.set_defaults(func=cmd_auto)

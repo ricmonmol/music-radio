@@ -11,10 +11,10 @@
 # Auto-recuperación: si la cola sale en 0, respalda logs/played.txt, lo limpia
 # y reintenta una vez (el historial web se pierde solo en ese caso extremo).
 set -euo pipefail
-cd "$(dirname "$0")/.."
-set -a
-. ./.env
-set +a
+# shellcheck source=scripts/bash_utils.sh
+source scripts/bash_utils.sh
+cd_project_root
+ensure_env
 
 MIN_SONGS="${MIN_SONGS:-20}"
 MAX_SONGS="${MAX_SONGS:-200}"
@@ -34,7 +34,7 @@ else
 fi
 
 # 2) Rotar logs (evita crecimiento infinito)
-scripts/cleanup_logs.sh || true
+cleanup_logs
 
 # 3) Descargar música nueva
 if [[ "${1:-}" == "--auto" ]]; then
@@ -56,7 +56,7 @@ fi
 
 # 5) Regenerar cola (con recuperación si queda en 0)
 gen_queue() {
-    ./venv/bin/python scripts/selector.py --clima clima.json || true
+    run_selector clima.json || true
 }
 count_queue() {
     grep -cE '\.(mp3|flac|ogg|m4a|aac|wav|opus)$' queue.m3u 2>/dev/null || true
@@ -103,7 +103,7 @@ LPID=$!
 setsid nohup ./venv/bin/python scripts/web_server.py --host 0.0.0.0 >> logs/web.out 2>&1 < /dev/null &
 
 # 7) Verificar
-sleep 3
+sleep 5
 echo "5) Verificación"
 curl -s --max-time 3 -o /dev/null -w "  Stream /radio: %{http_code} %{content_type}\n" http://localhost:8000/radio || echo "  Stream /radio: sin respuesta"
 curl -s --max-time 3 -o /dev/null -w "  Web /:       %{http_code}\n" http://localhost:8080/ || echo "  Web /: sin respuesta"

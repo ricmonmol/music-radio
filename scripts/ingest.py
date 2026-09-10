@@ -7,7 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lib import PROJECT_ROOT, load_json, save_json  # noqa: E402
 AUDIO_EXTS = {".mp3", ".flac", ".ogg", ".m4a", ".aac", ".wav", ".opus"}
 DEFAULT_LICENSE = "download-only"
 
@@ -42,13 +43,7 @@ def ffmpeg_probe(path):
 
 
 def load_songs(path):
-    if Path(path).exists():
-        try:
-            data = Path(path).read_text(encoding="utf-8")
-            return json.loads(data) if data.strip() else []
-        except json.JSONDecodeError:
-            return []
-    return []
+    return load_json(path)
 
 
 def main():
@@ -68,6 +63,7 @@ def main():
     songs_path = Path(args.songs)
     songs = load_songs(songs_path)
     by_id = {s["id"]: s for s in songs}
+    by_file = {str(s.get("file")): s["id"] for s in songs}
 
     files = sorted(
         p for p in music_dir.rglob("*")
@@ -81,7 +77,7 @@ def main():
     for f in files:
         rel = str(f.relative_to(music_dir.parent))
         sid = hashlib.sha1(rel.encode("utf-8")).hexdigest()[:16]
-        if sid in by_id:
+        if sid in by_id or rel in by_file:
             skipped += 1
             continue
         info = ffmpeg_probe(f)
@@ -110,10 +106,7 @@ def main():
         print(f"+ {entry['license']:14s} {rel}")
 
     if not args.dry_run:
-        songs_path.write_text(
-            json.dumps(list(by_id.values()), ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        save_json(args.songs, list(by_id.values()))
     print(f"\nResumen: {added} añadidas, {skipped} ya presentes en {songs_path}")
     print("Aviso: sin --license, los archivos quedan 'download-only' y NO se "
           "emiten hasta editar el campo license en songs.json.")

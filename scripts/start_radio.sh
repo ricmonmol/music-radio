@@ -2,22 +2,31 @@
 # Arranca la radio: genera la cola inicial y lanza Liquidsoap y el panel web
 # desacoplados.
 set -e
-cd "$(dirname "$0")/.."
-set -a
-. ./.env
-set +a
+# shellcheck source=scripts/bash_utils.sh
+source scripts/bash_utils.sh
+cd_project_root
+ensure_env
 
 PIDFILE="liquidsoap.pid"
 
 # Detener instancias previas de forma segura
 if [ -f "$PIDFILE" ]; then
     old_pid=$(cat "$PIDFILE")
-    kill -0 "$old_pid" 2>/dev/null && kill "$old_pid" 2>/dev/null || true
+    if kill -0 "$old_pid" 2>/dev/null; then
+        kill "$old_pid" 2>/dev/null || true
+        for _ in $(seq 1 30); do
+            kill -0 "$old_pid" 2>/dev/null || break
+            sleep 0.1
+        done
+        kill -0 "$old_pid" 2>/dev/null && kill -9 "$old_pid" 2>/dev/null || true
+    fi
     rm -f "$PIDFILE"
-    sleep 1
+    sleep 0.5
 fi
 
-./venv/bin/python scripts/selector.py --clima clima.json || true
+cleanup_logs
+
+run_selector clima.json || true
 liquidsoap radio.liq >> logs/liquidsoap.out 2>&1 < /dev/null &
 echo "$!" > "$PIDFILE"
 LPID=$!

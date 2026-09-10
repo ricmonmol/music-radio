@@ -16,11 +16,11 @@ Uso:
       --energy 0.4 --mood suave
 """
 import argparse
-import json
 import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lib import PROJECT_ROOT, load_json, save_json  # noqa: E402
 
 CLIMATE_FIELDS = {
     "mood": "list",
@@ -35,13 +35,7 @@ ATTRIBUTION_FIELDS = ("creator", "license_url", "track_url")
 
 
 def load_songs(path):
-    if Path(path).exists():
-        try:
-            data = Path(path).read_text(encoding="utf-8")
-            return json.loads(data) if data.strip() else []
-        except json.JSONDecodeError:
-            return []
-    return []
+    return load_json(path)
 
 
 def parse_list(value):
@@ -120,9 +114,7 @@ def main():
             s.setdefault("attribution", {}).update(attribution)
 
     if not args.dry_run:
-        Path(args.songs).write_text(
-            json.dumps(songs, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8")
+        save_json(args.songs, songs)
 
     print(f"Etiquetadas {len(matches)} canciones de '{args.artist}'"
           + (f" / '{args.album}'" if args.album else "")

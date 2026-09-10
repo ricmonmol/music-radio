@@ -4,7 +4,9 @@
 #   ./scripts/radio_update.sh          -> ingesta de MP3 locales nuevos en music/
 #   ./scripts/radio_update.sh --auto N -> además baja N temas nuevos de Jamendo
 set -e
-cd "$(dirname "$0")/.."
+# shellcheck source=scripts/bash_utils.sh
+source scripts/bash_utils.sh
+cd_project_root
 
 echo "1) Ingesta de música local (music/ -> songs.json)..."
 ./venv/bin/python scripts/ingest.py --license cc-by-nc || true
@@ -18,5 +20,6 @@ else
 fi
 
 echo "3) Regenerando cola (queue.m3u)..."
-./venv/bin/python scripts/selector.py --clima clima.json || true
+run_selector clima.json || true
+cleanup_logs
 echo "Catálogo actualizado. Liquidsoap recarga queue.m3u automáticamente."

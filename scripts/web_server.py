@@ -14,38 +14,48 @@ import argparse
 import json
 import re
 import socket
+import sys
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lib import PROJECT_ROOT, load_json  # noqa: E402
 
 
-def load_json(path):
-    p = Path(path)
-    if not p.exists():
-        return []
-    try:
-        data = p.read_text(encoding="utf-8")
-        return json.loads(data) if data.strip() else []
-    except json.JSONDecodeError:
-        return []
+class SongCache:
+    def __init__(self, path):
+        self.path = Path(path)
+        self.mtime = None
+        self.songs = []
+        self.by_resolved_path = {}
 
-
-def load_song_by_file(songs, fname):
-    if not fname:
-        return None
-    try:
-        resolved = str(Path(fname).resolve())
-    except OSError:
-        return None
-    for s in songs:
+    def get_by_fname(self, fname):
+        if not fname:
+            return None
+        self.refresh()
         try:
-            if resolved == str((PROJECT_ROOT / s["file"]).resolve()):
-                return s
+            resolved = str(Path(fname).resolve())
         except OSError:
-            continue
-    return None
+            resolved = fname
+        return self.by_resolved_path.get(resolved)
+
+    def refresh(self):
+        try:
+            current_mtime = self.path.stat().st_mtime
+        except OSError:
+            return
+        if self.mtime != current_mtime:
+            self.songs = load_json(self.path)
+            new_map = {}
+            for s in self.songs:
+                try:
+                    rp = str((PROJECT_ROOT / s["file"]).resolve())
+                    new_map[rp] = s
+                except OSError:
+                    continue
+            self.by_resolved_path = new_map
+            self.mtime = current_mtime
 
 
 def public(song):
@@ -63,8 +73,8 @@ def public(song):
 
 
 def make_handler(songs_path, nowplaying, played, web_dir):
-    def songs_now():
-        return load_json(songs_path)
+    cache = SongCache(songs_path)
+    cache.refresh()
 
     class Handler(SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
@@ -122,7 +132,6 @@ def make_handler(songs_path, nowplaying, played, web_dir):
             self.wfile.write(data)
 
         def _now(self):
-            songs = songs_now()
             p = Path(nowplaying)
             if not p.exists():
                 return {}
@@ -130,7 +139,7 @@ def make_handler(songs_path, nowplaying, played, web_dir):
             if not line:
                 return {}
             fname = line.split("|", 1)[0].strip()
-            song = load_song_by_file(songs, fname)
+            song = cache.get_by_fname(fname)
             if song is None:
                 return {"label": line}
             return public(song)
@@ -140,7 +149,6 @@ def make_handler(songs_path, nowplaying, played, web_dir):
             m = re.search(r"[?&]n=(\d+)", self.path)
             if m:
                 n = max(1, min(int(m.group(1)), 200))
-            songs = songs_now()
             p = Path(played)
             if not p.exists():
                 return []
@@ -165,7 +173,7 @@ def make_handler(songs_path, nowplaying, played, web_dir):
                 if fname == last_seen:
                     continue
                 last_seen = fname
-                song = load_song_by_file(songs, fname)
+                song = cache.get_by_fname(fname)
                 out.append(public(song) if song else {"label": line})
                 if len(out) >= n:
                     break

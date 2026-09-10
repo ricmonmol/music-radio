@@ -22,7 +22,7 @@ def log_track(m) =
   artist = if m["artist"] != "" then m["artist"] else "?" end
   # El playlist on_track puede dispararse varias veces por el mismo track
   # (carga inicial / reload de queue.m3u); se ignora el duplicado consecutivo.
-  if fname == !last_played_fname then
+  if fname == last_played_fname() then
     ()
   else
     last_played_fname := fname
@@ -32,12 +32,12 @@ def log_track(m) =
   end
 end
 
-play_src.on_track(log_track)
+play_src.on_track(synchronous=true, log_track)
 
 stream = mksafe(play_src)
 
 def env_or(k, d) =
-  l = get_process_lines("sh -c 'echo -n \"$" ^ k ^ "\"'")
+  l = process.read.lines("sh -c 'echo -n \"$" ^ k ^ "\"'")
   if list.length(l) == 0 then d else list.hd(l) end
 end
 

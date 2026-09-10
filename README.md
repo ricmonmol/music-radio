@@ -27,6 +27,14 @@ partir de un conjunto de artistas.
 2. `radio.liq` reproduce `queue.m3u` y emite vía Icecast (mount `/radio`).
 3. `web_server.py` expone estado y control en `web/index.html`.
 
+## En vivo
+
+- Radio (stream MP3 192 kbps): <http://201.236.188.118:8000/radio>
+- Panel web: <http://201.236.188.118:8080>
+
+Los puertos 8000 (Icecast) y 8080 (panel, `--host 0.0.0.0` en
+`start_radio.sh`) se redirigen desde el router hacia el server.
+
 ## Configuración
 
 - `clima.json` — Clima musical activo

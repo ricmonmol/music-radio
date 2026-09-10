@@ -13,6 +13,7 @@ resuelve contra songs.json para mostrar la atribución completa.
 import argparse
 import json
 import re
+import socket
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -75,7 +76,41 @@ def make_handler(songs_path, nowplaying, played, web_dir):
                 return self._send_json(self._now())
             if path == "/history":
                 return self._send_json(self._history())
+            if path.startswith("/radio"):
+                return self._proxy_icecast()
             return super().do_GET()
+
+        def _proxy_icecast(self):
+            up = None
+            try:
+                up = socket.create_connection(("127.0.0.1", 8000), timeout=10)
+            except OSError:
+                self.send_error(503, "Icecast no disponible")
+                return
+            try:
+                req = f"{self.command} {self.path} {self.request_version}\r\n"
+                for k, v in self.headers.items():
+                    if k.lower() in (
+                        "proxy-connection",
+                        "connection",
+                        "keep-alive",
+                        "te",
+                        "trailer",
+                        "transfer-encoding",
+                        "upgrade",
+                    ):
+                        continue
+                    req += f"{k}: {v}\r\n"
+                req += "Connection: close\r\n\r\n"
+                up.sendall(req.encode("latin-1", "replace"))
+                while True:
+                    data = up.recv(65536)
+                    if not data:
+                        break
+                    self.wfile.write(data)
+                    self.wfile.flush()
+            finally:
+                up.close()
 
         def _send_json(self, obj):
             data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -109,13 +144,27 @@ def make_handler(songs_path, nowplaying, played, web_dir):
             p = Path(played)
             if not p.exists():
                 return []
+            current = None
+            np = Path(nowplaying)
+            if np.exists():
+                line = np.read_text(encoding="utf-8", errors="replace").strip()
+                if line:
+                    current = line.split("|", 1)[0].strip()
             out = []
+            last_seen = None
             for line in reversed(p.read_text(encoding="utf-8",
                                              errors="replace").splitlines()):
                 line = line.strip()
                 if not line:
                     continue
                 fname = line.split("|", 1)[0].strip()
+                # el historial muestra las ANTERIORES: se omite la que suena ahora
+                if current and fname == current:
+                    continue
+                # colapsar duplicados consecutivos (restos del doble on_track)
+                if fname == last_seen:
+                    continue
+                last_seen = fname
                 song = load_song_by_file(songs, fname)
                 out.append(public(song) if song else {"label": line})
                 if len(out) >= n:

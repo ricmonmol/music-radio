@@ -32,12 +32,14 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 API = "https://api.jamendo.com/v3.0/tracks/"
+SEEN_PATH = PROJECT_ROOT / "data" / "jamendo_seen.json"
 
 # Licencias que el selector puede emitir (EMIT_LICENSES)
 EMIT_LICENSES = {
@@ -85,6 +87,24 @@ def save_songs(path, songs):
         json.dumps(songs, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def load_seen():
+    """Registro persistente de jamendo_id ya descargados alguna vez; sobrevive
+    a los rotates (no se vuelven a descargar los archivados)."""
+    if SEEN_PATH.exists():
+        try:
+            return set(json.loads(SEEN_PATH.read_text(encoding="utf-8")))
+        except (json.JSONDecodeError, OSError, TypeError):
+            return set()
+    return set()
+
+
+def save_seen(seen):
+    SEEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SEEN_PATH.write_text(
+        json.dumps(sorted(seen), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8")
+
+
 def license_short(curl):
     if not curl:
         return None
@@ -100,9 +120,20 @@ def api_get(client_id, params):
     q = {"client_id": client_id, "format": "json", "include": "musicinfo"}
     q.update(params)
     url = API + "?" + urllib.parse.urlencode(q)
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return json.loads(r.read().decode("utf-8"))
+    # La API responde a veces con 0 resultados válidos de forma intermitente;
+    # se reintenta algunas veces antes de rendirse.
+    for _ in range(3):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                doc = json.loads(r.read().decode("utf-8"))
+        except OSError:
+            doc = None
+        if doc is not None and doc.get("results"):
+            return doc
+        time.sleep(1.0)
+    return doc if doc is not None else {
+        "headers": {"status": "failed", "error_message": "no response"}}
 
 
 def climate_from_track(t):
@@ -307,6 +338,7 @@ def cmd_download(args):
         return 1
     songs = load_songs(args.songs)
     existing = {s.get("jamendo_id") for s in songs if s.get("jamendo_id")}
+    ever_seen = load_seen()
     out_root = Path(args.music)
     added = skipped = nonlegible = failed = 0
     for tid in ids:
@@ -332,6 +364,10 @@ def cmd_download(args):
             print(f"  - {tid}: ya en el catálogo -> saltado")
             skipped += 1
             continue
+        if tid in ever_seen:
+            print(f"  - {tid}: ya descargado antes (historial persistente) -> saltado")
+            skipped += 1
+            continue
         if not t.get("audiodownload_allowed"):
             print(f"  - {tid}: audiodownload_allowed=false -> saltado")
             nonlegible += 1
@@ -345,9 +381,11 @@ def cmd_download(args):
         entry["file"] = str(rel)
         songs.append(entry)
         existing.add(tid)
+        ever_seen.add(tid)
         added += 1
     if not args.no_save and added:
         save_songs(args.songs, songs)
+        save_seen(ever_seen)
     print(f"\nResumen: {added} añadidas, {skipped} ya presentes, "
           f"{nonlegible} no emisibles, {failed} con error.")
     if added:
@@ -362,12 +400,13 @@ def cmd_batch(args):
     PAGE = min(200, max(args.limit, 1))
     songs = load_songs(args.songs)
     existing = {s.get("jamendo_id") for s in songs if s.get("jamendo_id")}
+    ever_seen = load_seen()
     out_root = Path(args.music)
     target_climate = load_target_climate(args.clima)
     max_dist = args.max_distance
 
     added = fetched = filtered = nonlegible = failed = 0
-    seen = set()
+    page_seen = set()
     offset = 0
     try_limit = max(args.limit * 4, 200)
 
@@ -397,9 +436,9 @@ def cmd_batch(args):
             if added >= args.limit:
                 break
             tid = str(t.get("id"))
-            if tid in existing or tid in seen:
+            if tid in existing or tid in ever_seen or tid in page_seen:
                 continue
-            seen.add(tid)
+            page_seen.add(tid)
             entry = build_entry(t)
             if entry is None:
                 nonlegible += 1
@@ -421,6 +460,7 @@ def cmd_batch(args):
                   f" {label}-> {rel}")
             songs.append(entry)
             existing.add(tid)
+            ever_seen.add(tid)
             added += 1
         if len(tracks) < limit:
             break
@@ -428,8 +468,10 @@ def cmd_batch(args):
 
     if added and not args.no_save:
         save_songs(args.songs, songs)
+        save_seen(ever_seen)
     print(f"\nResumen batch: {added} añadidas, {nonlegible} no emisibles, "
           f"{filtered} fuera de clima, {failed} con error.")
+    print(f"Historial persistente: {len(ever_seen)} jamendo_id únicos descargados.")
     if added:
         print("Ejecuta luego selector.py para regenerar la cola.")
     return 0

@@ -32,7 +32,7 @@ def log_track(m) =
   end
 end
 
-play_src.on_track(log_track)
+play_src.on_track(synchronous=false, log_track)
 
 stream = mksafe(play_src)
 

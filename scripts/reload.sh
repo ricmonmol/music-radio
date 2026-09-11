@@ -79,7 +79,7 @@ stop_liquidsoap() {
     # Matar cualquier huérfano
     pgrep -x liquidsoap 2>/dev/null | while read -r pid; do
         kill "$pid" 2>/dev/null || true
-    done
+    done || true
     sleep 0.5
 }
 

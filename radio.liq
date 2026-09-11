@@ -35,8 +35,8 @@ def log_track(m) =
     write_nowplaying(m)
     track_count := !track_count + 1
     if !track_count mod REGEN_EVERY == 0 then
-      log("selector: regenerando cola (track #{!track_count})...")
-      ignore(process.run("bash -c './venv/bin/python scripts/selector.py --clima clima.json >> logs/select.log 2>&1 &'"))
+      log("selector: verificando catálogo y regenerando cola (track #{!track_count})...")
+      ignore(process.run("bash -c './venv/bin/python scripts/catalog_manager.py auto --min-songs 30 --max-songs 200 --batch-size 50 >> logs/catalog.log 2>&1 &'"))
     end
   end
 end

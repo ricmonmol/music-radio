@@ -3,233 +3,230 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Radio algorítmica — clima musical</title>
+    <title>radio</title>
     <link
       rel="icon"
       href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📻</text></svg>"
     />
     <style>
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
       body {
-        font-family: system-ui, sans-serif;
-        background: #111;
-        color: #ddd;
-        max-width: 44rem;
+        font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace;
+        background: #0c0c0c;
+        color: #555;
+        max-width: 52rem;
         margin: 0 auto;
-        padding: 0 1rem;
+        padding: 2rem 1.5rem 3rem;
+        font-size: 0.88rem;
+        line-height: 1.7;
       }
-      .player {
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-        margin-top: 1.5rem;
-        flex-wrap: wrap;
+
+      a { color: inherit; text-decoration: none; }
+      a:hover { color: #888; }
+
+      /* ── header ── */
+      .header { color: #2a2a2a; margin-bottom: 2rem; }
+      .header .dollar { color: #222; }
+
+      /* ── box now playing ── */
+      .now-box {
+        border: 1px solid #1c1c1c;
+        padding: 1rem 1.25rem;
+        margin: 0 0 1.25rem;
+        min-height: 5.5rem;
       }
-      .player button {
-        flex: 0 0 auto;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: #1e3;
-        color: #032;
-        border: 0;
-        border-radius: 0.4rem;
-        padding: 0.7rem 1.4rem;
-        font-weight: 600;
-        cursor: pointer;
-        font-size: 1rem;
-        line-height: 1;
-      }
-      .player button:hover {
-        background: #2f5;
-      }
-      /* Estado por defecto: audio pausado → mostrar ícono ▶ */
-      .ico-play {
-        display: block;
-      }
-      .ico-pause {
-        display: none;
-      }
-      /* Con clase .playing (audio sonando) → mostrar ícono ⏸ */
-      .player button.playing .ico-play {
-        display: none;
-      }
-      .player button.playing .ico-pause {
-        display: block;
-      }
-      .credits {
-        color: #777;
-        font-size: 0.8rem;
-        margin-top: 2rem;
-        padding-bottom: 1.5rem;
-      }
-      .credits a {
-        color: #7db;
-        text-decoration: none;
-      }
-      .vol {
-        display: flex;
-        align-items: center;
-        gap: 0.4rem;
-        margin-left: auto;
-      }
-      .player .vol-btn {
-        background: transparent;
-        border: 1.5px solid #1e3;
-        border-radius: 0.3rem;
-        color: #aaa;
-        font-weight: normal;
-        font-size: 1.1rem;
-        padding: 0.45rem 0.65rem;
-        line-height: 1;
-      }
-      .player .vol-btn:hover {
-        background: transparent;
-        color: #fff;
-        border-color: #2f5;
-      }
-      #volSlider {
-        -webkit-appearance: none;
-        appearance: none;
-        width: 90px;
-        height: 4px;
-        border-radius: 2px;
-        background: #444;
-        outline: none;
-        cursor: pointer;
-      }
-      #volSlider::-webkit-slider-thumb {
-        -webkit-appearance: none;
-        appearance: none;
-        width: 14px;
-        height: 14px;
-        border-radius: 50%;
-        background: #1e3;
-        cursor: pointer;
-      }
-      #volSlider::-moz-range-thumb {
-        width: 14px;
-        height: 14px;
-        border-radius: 50%;
-        background: #1e3;
-        border: 0;
-        cursor: pointer;
-      }
-      #volLabel {
-        color: #777;
-        font-size: 0.78rem;
-        min-width: 2.2rem;
-        text-align: right;
-      }
-      .card {
-        border: 1px solid #333;
-        border-radius: 0.5rem;
-        padding: 1rem;
-        margin: 1.5rem 0;
-      }
-      .card h2 {
-        font-size: 1rem;
-        color: #aaa;
-        margin-top: 0;
-      }
-      #np .song {
-        color: #fff;
-        font-weight: 600;
-        font-size: 1.05rem;
-      }
-      #np .album {
-        color: #bbb;
-        font-size: 0.9rem;
-        margin-top: 0.15rem;
-      }
-      .attr {
-        color: #999;
-        font-size: 0.85rem;
-        margin-top: 0.35rem;
-      }
-      .attr a {
-        color: #7db;
-      }
-      .empty {
-        color: #666;
-        font-style: italic;
-      }
-      .hist {
-        list-style: none;
-        margin: 0;
-        padding: 0;
-      }
-      .hist li {
-        padding: 0.5rem 0;
-        border-top: 1px solid #262626;
-      }
-      .hist li:first-child {
-        border-top: 0;
-      }
-      .hist .song {
-        color: #eee;
-      }
-      .hist .meta {
+
+      .now-artist {
         color: #888;
+        letter-spacing: 0.06em;
         font-size: 0.82rem;
-        margin-top: 0.15rem;
+        margin-bottom: 0.15rem;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
-      .hist a {
-        color: #7db;
+
+      .now-tree { color: #2e2e2e; }
+
+      .now-title {
+        color: #666;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
+
+      /* ── volume ── */
+      .vol-row {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        margin-bottom: 1rem;
+        color: #2a2a2a;
+      }
+
+      .vol-lbl { color: #252525; }
+
+      .vol-wrap {
+        position: relative;
+        display: inline-block;
+        cursor: pointer;
+      }
+
+      .vol-bar {
+        display: block;
+        letter-spacing: 0.04em;
+        color: #383838;
+        user-select: none;
+        pointer-events: none;
+      }
+
+      #volSlider {
+        position: absolute;
+        inset: 0;
+        opacity: 0;
+        cursor: pointer;
+        width: 100%;
+        height: 100%;
+        margin: 0;
+      }
+
+      .vol-pct { color: #222; min-width: 2.5rem; }
+
+      #muteBtn {
+        background: none;
+        border: none;
+        font-family: inherit;
+        font-size: inherit;
+        color: #252525;
+        cursor: pointer;
+        padding: 0;
+        line-height: 1;
+      }
+      #muteBtn:hover { color: #666; }
+
+      /* ── play button ── */
+      #playBtn {
+        background: none;
+        border: none;
+        font-family: inherit;
+        font-size: inherit;
+        cursor: pointer;
+        padding: 0;
+        line-height: inherit;
+        color: #555;
+        margin-bottom: 2rem;
+        display: block;
+      }
+      #playBtn:hover { color: #888; }
+      #playBtn .arrow { color: #333; }
+
+      /* ── history ── */
+      .hist-lbl {
+        color: #222;
+        margin-bottom: 0.35rem;
+      }
+
+      .hist-list {
+        list-style: none;
+      }
+
+      .hist-list li {
+        display: flex;
+        align-items: baseline;
+        gap: 0.4rem;
+        color: #252525;
+        line-height: 1.7;
+      }
+
+      .hist-tree { color: #1e1e1e; flex: 0 0 auto; }
+
+      .hist-text {
+        flex: 1;
+        min-width: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .hist-link {
+        color: #1e1e1e;
+        text-decoration: none;
+        flex: 0 0 auto;
+        padding-left: 0.5rem;
+      }
+      .hist-link:hover { color: #666; }
+
+      /* ── footer ── */
+      footer {
+        margin-top: 3rem;
+        color: #1c1c1c;
+        font-size: 0.78rem;
+      }
+
+      .empty { color: #222; font-style: normal; }
     </style>
   </head>
   <body>
-    <div class="player">
-      <button id="playBtn" title="Pausar" aria-label="Pausar">
-        <svg class="ico-pause" viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
-        <svg class="ico-play" viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
-      </button>
-      <audio id="radio" autoplay preload="none" src="/radio"></audio>
-      <div class="vol">
-        <button class="vol-btn" id="muteBtn" title="Silenciar / Activar">
-          🔊
-        </button>
-        <input type="range" id="volSlider" min="0" max="100" value="80" />
-        <span id="volLabel">80%</span>
+    <div class="header"><span class="dollar">$</span> radio</div>
+
+    <div class="now-box">
+      <div class="now-artist" id="npArtist">—</div>
+      <div>
+        <span class="now-tree">└─ </span><span class="now-title" id="npTitle"></span>
       </div>
     </div>
 
-    <div class="card">
-      <h2>Now playing</h2>
-      <div id="np"><p class="empty">Sin tema aún…</p></div>
+    <div class="vol-row">
+      <span class="vol-lbl">vol</span>
+      <div class="vol-wrap">
+        <span class="vol-bar" id="volBar">████████░░</span>
+        <input type="range" id="volSlider" min="0" max="100" value="80" />
+      </div>
+      <span class="vol-pct" id="volLabel">80%</span>
+      <button id="muteBtn" title="Silenciar / Activar">🔇</button>
     </div>
 
-    <div class="card">
-      <h2>Historial · últimas escuchadas</h2>
-      <div id="hist"><p class="empty">Cargando…</p></div>
-    </div>
+    <button id="playBtn">
+      <span class="arrow">&gt;</span> <span id="playLabel">escuchar</span>
+    </button>
 
-    <footer class="credits">
-      Música libre de <a href="https://www.jamendo.com" target="_blank" rel="noopener">Jamendo</a> ·
-      Hecho por <a href="https://github.com/ricmonmol" target="_blank" rel="noopener">ricmonmol</a>
+    <audio id="radio" autoplay preload="none" src="/radio"></audio>
+
+    <div class="hist-lbl">anteriores</div>
+    <div id="hist"><span class="empty">—</span></div>
+
+    <footer>
+      <a href="https://www.jamendo.com" target="_blank" rel="noopener">jamendo</a> · cc ·
+      <a href="https://github.com/ricmonmol" target="_blank" rel="noopener">ricmonmol</a>
     </footer>
 
     <script>
       function esc(s) {
         return String(s == null ? "" : s)
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;")
-          .replace(/"/g, "&quot;")
-          .replace(/'/g, "&#39;");
+          .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
       }
 
-      var radio = document.getElementById("radio");
-      var playBtn = document.getElementById("playBtn");
-      var volSlider = document.getElementById("volSlider");
-      var volLabel = document.getElementById("volLabel");
-      var muteBtn = document.getElementById("muteBtn");
+      function volBar(val, total) {
+        var filled = Math.round(val * total / 100);
+        return "█".repeat(filled) + "░".repeat(total - filled);
+      }
 
-      // Recuperar volumen guardado (default 80%)
+      var radio     = document.getElementById("radio");
+      var playBtn   = document.getElementById("playBtn");
+      var playLabel = document.getElementById("playLabel");
+      var volSlider = document.getElementById("volSlider");
+      var volLabel  = document.getElementById("volLabel");
+      var volBarEl  = document.getElementById("volBar");
+      var muteBtn   = document.getElementById("muteBtn");
+
+      // Volumen guardado (default 80%)
       var savedVol = parseFloat(localStorage.getItem("radioVol") || "0.8");
       radio.volume = savedVol;
       volSlider.value = Math.round(savedVol * 100);
       volLabel.textContent = Math.round(savedVol * 100) + "%";
+      volBarEl.textContent = volBar(Math.round(savedVol * 100), 10);
 
       function updateMuteIcon() {
         var v = radio.muted ? 0 : radio.volume;
@@ -238,126 +235,82 @@
       updateMuteIcon();
 
       volSlider.addEventListener("input", function () {
-        var val = parseInt(this.value) / 100;
-        radio.volume = val;
+        var pct = parseInt(this.value);
+        radio.volume = pct / 100;
         radio.muted = false;
-        volLabel.textContent = this.value + "%";
-        localStorage.setItem("radioVol", val);
+        volLabel.textContent = pct + "%";
+        volBarEl.textContent = volBar(pct, 10);
+        localStorage.setItem("radioVol", pct / 100);
         updateMuteIcon();
       });
 
       muteBtn.addEventListener("click", function () {
         radio.muted = !radio.muted;
         updateMuteIcon();
-        volLabel.style.visibility = radio.muted ? "hidden" : "visible";
       });
 
       function tick() {
-        playBtn.classList.toggle("playing", !radio.paused);
-        playBtn.title = radio.paused ? "Escuchar" : "Pausar";
-        playBtn.setAttribute("aria-label", playBtn.title);
+        var playing = !radio.paused;
+        playLabel.textContent = playing ? "pausar" : "escuchar";
       }
-      radio.addEventListener("play", tick);
+      radio.addEventListener("play",  tick);
       radio.addEventListener("pause", tick);
       playBtn.addEventListener("click", function () {
-        if (radio.paused) {
-          radio.play().catch(function () {});
-        } else {
-          radio.pause();
-        }
+        if (radio.paused) { radio.play().catch(function(){}); }
+        else              { radio.pause(); }
       });
       setInterval(tick, 2000);
       tick();
 
+      // ── now playing ──────────────────────────────────────────────────
       async function load() {
         try {
-          const np = await fetch("/now").then((r) => r.json());
-          const el = document.getElementById("np");
+          var np = await fetch("/now").then(function(r){ return r.json(); });
+          var artistEl = document.getElementById("npArtist");
+          var titleEl  = document.getElementById("npTitle");
           if (!np || !np.title) {
-            el.innerHTML = '<p class="empty">Sin tema aún…</p>';
+            artistEl.textContent = "—";
+            titleEl.textContent  = "";
           } else {
-            const att = [];
-            if (np.license_url) {
-              att.push(
-                '<a href="' +
-                  esc(np.license_url) +
-                  '" target="_blank" rel="noopener">' +
-                  esc((np.license || "").toUpperCase()) +
-                  "</a>",
-              );
-            } else if (np.license) {
-              att.push(esc(np.license.toUpperCase()));
-            }
+            artistEl.textContent = (np.artist || "?").toUpperCase();
             if (np.track_url) {
-              att.push(
-                '<a href="' +
-                  esc(np.track_url) +
-                  '" target="_blank" rel="noopener">ver tema original</a>',
-              );
+              titleEl.innerHTML = '<a href="' + esc(np.track_url) + '" target="_blank" rel="noopener">' + esc(np.title) + '</a>';
+            } else {
+              titleEl.textContent = np.title;
             }
-            el.innerHTML =
-              '<div class="song">' +
-              esc(np.title || "?") +
-              "</div>" +
-              (np.album
-                ? '<div class="album">' + esc(np.album) + "</div>"
-                : "") +
-              '<div class="attr">' +
-              esc(np.artist || "?") +
-              (att.length ? " · " + att.join(" · ") : "") +
-              "</div>";
           }
-        } catch (e) {
-          document.getElementById("np").innerHTML =
-            '<p class="empty">No responde la API (/now).</p>';
+        } catch(e) {
+          document.getElementById("npArtist").textContent = "—";
+          document.getElementById("npTitle").textContent  = "";
         }
       }
       load();
       setInterval(load, 15000);
 
+      // ── historial ─────────────────────────────────────────────────────
       async function loadHistory() {
-        const el = document.getElementById("hist");
+        var el = document.getElementById("hist");
         try {
-          const items = await fetch("/history?n=5").then((r) => r.json());
+          var items = await fetch("/history?n=8").then(function(r){ return r.json(); });
           if (!items || !items.length) {
-            el.innerHTML = '<p class="empty">Sin historial todavía.</p>';
+            el.innerHTML = '<span class="empty">—</span>';
             return;
           }
-          const lis = items
-            .map(function (it) {
-              const title = it.title || it.label || "?";
-              const meta = [];
-              const who = esc(it.artist || it.album || "");
-              if (it.license) meta.push(esc(it.license.toUpperCase()));
-              if (it.track_url) {
-                meta.push(
-                  '<a href="' +
-                    esc(it.track_url) +
-                    '" target="_blank" rel="noopener">fuente</a>',
-                );
-              }
-              return (
-                "<li>" +
-                "<span>" +
-                (it.track_url
-                  ? '<a href="' +
-                    esc(it.track_url) +
-                    '" target="_blank" rel="noopener">' +
-                    esc(title) +
-                    "</a>"
-                  : esc(title)) +
-                "</span>" +
-                (who ? '<div class="meta">' + who + "</div>" : "") +
-                (meta.length
-                  ? '<div class="meta">' + meta.join(" · ") + "</div>"
-                  : "") +
-                "</li>"
-              );
-            })
-            .join("");
-          el.innerHTML = '<ul class="hist">' + lis + "</ul>";
-        } catch (e) {
-          el.innerHTML = '<p class="empty">No responde la API (/history).</p>';
+          var lis = items.map(function(it) {
+            var title  = it.title || it.label || "?";
+            var artist = it.artist ? it.artist + " — " : "";
+            var link   = it.track_url
+              ? ' <a class="hist-link" href="' + esc(it.track_url) + '" target="_blank" rel="noopener">↗</a>'
+              : '';
+            return '<li>'
+              + '<span class="hist-tree">└─ </span>'
+              + '<span class="hist-text">' + esc(artist + title) + '</span>'
+              + link
+              + '</li>';
+          }).join("");
+          el.innerHTML = '<ul class="hist-list">' + lis + '</ul>';
+        } catch(e) {
+          el.innerHTML = '<span class="empty">—</span>';
         }
       }
       loadHistory();

@@ -38,6 +38,18 @@
       .player button:hover {
         background: #2f5;
       }
+      .ico-pause {
+        display: inline-flex;
+      }
+      .ico-play {
+        display: none;
+      }
+      .player button.playing .ico-pause {
+        display: none;
+      }
+      .player button.playing .ico-play {
+        display: inline-flex;
+      }
       .credits {
         color: #777;
         font-size: 0.8rem;
@@ -162,7 +174,10 @@
   </head>
   <body>
     <div class="player">
-      <button id="playBtn" title="Pausar">⏸️</button>
+      <button id="playBtn" title="Pausar" aria-label="Pausar">
+        <svg class="ico-pause" viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+        <svg class="ico-play" viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+      </button>
       <audio id="radio" autoplay preload="none" src="/radio"></audio>
       <div class="vol">
         <button class="vol-btn" id="muteBtn" title="Silenciar / Activar">
@@ -232,9 +247,9 @@
       });
 
       function tick() {
-        var paused = radio.paused;
-        playBtn.textContent = paused ? "▶️" : "⏸️";
-        playBtn.title = paused ? "Escuchar" : "Pausar";
+        playBtn.classList.toggle("playing", !radio.paused);
+        playBtn.title = radio.paused ? "Escuchar" : "Pausar";
+        playBtn.setAttribute("aria-label", playBtn.title);
       }
       radio.addEventListener("play", tick);
       radio.addEventListener("pause", tick);

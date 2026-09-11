@@ -150,6 +150,18 @@ case "$MODE" in
     echo "Listo. Liquidsoap recarga queue.m3u automáticamente."
     ;;
 
+  --restart)
+    # Reinicio de servicios sin tocar el catálogo
+    echo "== reload: restart servicios =="
+    ensure_icecast
+    stop_liquidsoap
+    stop_web
+    start_liquidsoap
+    start_web
+    verify
+    echo "Radio arriba. Web en http://<ip>:8080"
+    ;;
+
   --full)
     # Reinicio completo: fetch + cola + reiniciar todo
     echo "== reload: full restart =="
@@ -167,10 +179,11 @@ case "$MODE" in
     ;;
 
   *)
-    echo "Uso: $0 [--fetch N | --full]" >&2
-    echo "  (sin args)    regenera la cola" >&2
+    echo "Uso: $0 [--fetch N | --restart | --full [N]]" >&2
+    echo "  (sin args)    regenera la cola (liquidsoap recarga solo)" >&2
     echo "  --fetch N     baja N temas de Jamendo y regenera la cola" >&2
-    echo "  --full        baja canciones + reinicia liquidsoap y web" >&2
+    echo "  --restart     reinicia liquidsoap y web sin tocar el catálogo" >&2
+    echo "  --full [N]    baja N temas (default: $FETCH_N) + reinicia todo" >&2
     exit 1
     ;;
 

@@ -4,7 +4,10 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Radio algorítmica — clima musical</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📻</text></svg>" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📻</text></svg>"
+    />
     <style>
       body {
         font-family: system-ui, sans-serif;
@@ -32,10 +35,18 @@
         cursor: pointer;
         font-size: 1rem;
       }
-      .player button:hover { background: #2f5; }
-      .player .state {
-        color: #4a4;
-        font-size: 0.85rem;
+      .player button:hover {
+        background: #2f5;
+      }
+      .credits {
+        color: #777;
+        font-size: 0.8rem;
+        margin-top: 2rem;
+        padding-bottom: 1.5rem;
+      }
+      .credits a {
+        color: #7db;
+        text-decoration: none;
       }
       .vol {
         display: flex;
@@ -53,7 +64,11 @@
         padding: 0.45rem 0.65rem;
         line-height: 1;
       }
-      .player .vol-btn:hover { background: transparent; color: #fff; border-color: #2f5; }
+      .player .vol-btn:hover {
+        background: transparent;
+        color: #fff;
+        border-color: #2f5;
+      }
       #volSlider {
         -webkit-appearance: none;
         appearance: none;
@@ -147,16 +162,12 @@
   </head>
   <body>
     <div class="player">
-      <button id="playBtn">Pausar</button>
-      <span class="state" id="state">En vivo</span>
-      <audio
-        id="radio"
-        autoplay
-        preload="none"
-        src="/radio"
-      ></audio>
+      <button id="playBtn" title="Pausar">⏸️</button>
+      <audio id="radio" autoplay preload="none" src="/radio"></audio>
       <div class="vol">
-        <button class="vol-btn" id="muteBtn" title="Silenciar / Activar">🔊</button>
+        <button class="vol-btn" id="muteBtn" title="Silenciar / Activar">
+          🔊
+        </button>
         <input type="range" id="volSlider" min="0" max="100" value="80" />
         <span id="volLabel">80%</span>
       </div>
@@ -172,6 +183,11 @@
       <div id="hist"><p class="empty">Cargando…</p></div>
     </div>
 
+    <footer class="credits">
+      Música libre de <a href="https://www.jamendo.com" target="_blank" rel="noopener">Jamendo</a> ·
+      Hecho por <a href="https://github.com/ricmonmol" target="_blank" rel="noopener">ricmonmol</a>
+    </footer>
+
     <script>
       function esc(s) {
         return String(s == null ? "" : s)
@@ -184,7 +200,6 @@
 
       var radio = document.getElementById("radio");
       var playBtn = document.getElementById("playBtn");
-      var stateEl = document.getElementById("state");
       var volSlider = document.getElementById("volSlider");
       var volLabel = document.getElementById("volLabel");
       var muteBtn = document.getElementById("muteBtn");
@@ -217,25 +232,15 @@
       });
 
       function tick() {
-        playBtn.textContent = radio.paused ? "Escuchar" : "Pausar";
+        var paused = radio.paused;
+        playBtn.textContent = paused ? "▶️" : "⏸️";
+        playBtn.title = paused ? "Escuchar" : "Pausar";
       }
       radio.addEventListener("play", tick);
       radio.addEventListener("pause", tick);
-      radio.addEventListener("error", function () {
-        stateEl.textContent = "Sin conexión con el stream…";
-      });
-      radio.addEventListener("stalled", function () {
-        stateEl.textContent = "Reconectando en vivo…";
-      });
-      radio.addEventListener("waiting", function () {
-        stateEl.textContent = "Cargando en vivo…";
-      });
       playBtn.addEventListener("click", function () {
         if (radio.paused) {
-          radio.play().catch(function () {
-            stateEl.textContent =
-              "Bloqueado por el navegador: toca Escuchar para arrancar.";
-          });
+          radio.play().catch(function () {});
         } else {
           radio.pause();
         }
@@ -314,8 +319,11 @@
                 "<li>" +
                 "<span>" +
                 (it.track_url
-                  ? '<a href="' + esc(it.track_url) + '" target="_blank" rel="noopener">' +
-                    esc(title) + "</a>"
+                  ? '<a href="' +
+                    esc(it.track_url) +
+                    '" target="_blank" rel="noopener">' +
+                    esc(title) +
+                    "</a>"
                   : esc(title)) +
                 "</span>" +
                 (who ? '<div class="meta">' + who + "</div>" : "") +
@@ -336,4 +344,3 @@
     </script>
   </body>
 </html>
-

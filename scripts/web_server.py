@@ -113,6 +113,47 @@ def make_handler(songs_path, nowplaying, played, web_dir):
                     req += f"{k}: {v}\r\n"
                 req += "Connection: close\r\n\r\n"
                 up.sendall(req.encode("latin-1", "replace"))
+                headers = bytearray()
+                while True:
+                    chunk = up.recv(65536)
+                    if not chunk:
+                        break
+                    headers += chunk
+                    if b"\r\n\r\n" in headers:
+                        break
+                head, _, body = bytes(headers).partition(b"\r\n\r\n")
+                status = head.split(b"\r\n", 1)[0]
+                status_line = status.decode("latin-1", "replace")
+                m = re.match(r"HTTP/\d(?:\.\d)?\s+(\d{3})\b", status_line)
+                code = int(m.group(1)) if m else 200
+                reason = status_line.split(" ", 2)[2] if " " in status_line else ""
+                proto = self.protocol_version
+                self.send_response(code, reason)
+                for line in head.split(b"\r\n")[1:]:
+                    k, _, v = line.partition(b":")
+                    kl = k.decode("latin-1", "replace").strip().lower()
+                    if kl in (
+                        "connection",
+                        "keep-alive",
+                        "proxy-connection",
+                        "transfer-encoding",
+                        "content-length",
+                        "cache-control",
+                        "pragma",
+                        "expires",
+                    ):
+                        continue
+                    try:
+                        self.send_header(k.decode("latin-1", "replace").strip(),
+                                         v.decode("latin-1", "replace").strip())
+                    except UnicodeDecodeError:
+                        continue
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Pragma", "no-cache")
+                self.send_header("Expires", "0")
+                self.end_headers()
+                if body:
+                    self.wfile.write(body)
                 while True:
                     data = up.recv(65536)
                     if not data:

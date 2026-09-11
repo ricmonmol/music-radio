@@ -6,10 +6,10 @@ score = similarity x 0.35 + diversity x 0.25 + freshness x 0.15
 Elige de forma ponderada entre el top-K de candidatos (serendipia controlada).
 Registra en el diario por qué eligió cada canción.
 
-Repetición con criterio:
-  - --min-gap N: una canción no es candidata hasta que hayan sonado N otras
-  - --max-plays N: límite duro de reproducciones en historial
-  - Gap reducido por afinidad al clima objetivo
+Modo ronda sin repetición (por defecto):
+  - Cada canción solo suena UNA vez por ronda completa del catálogo.
+  - Al terminar la ronda, el pool se reinicia automáticamente.
+  - Se controla el espaciado entre canciones del mismo artista (--min-gap).
 """
 import argparse
 import json
@@ -34,7 +34,7 @@ WEIGHTS = {
 DEFAULT_WINDOW = 15
 DEFAULT_TOP_K = 5
 DEFAULT_TEMP = 1.0
-NO_REPEAT_ARTIST = 3
+NO_REPEAT_ARTIST = 5
 DEFAULT_MIN_GAP = 10
 DEFAULT_MAX_PLAYS = 3
 AFFINITY_THRESHOLD = 0.7
@@ -118,7 +118,10 @@ def main():
     ap.add_argument("--min-gap", type=int, default=DEFAULT_MIN_GAP,
                     help="mínimo de canciones entre repeticiones de una misma canción")
     ap.add_argument("--max-plays", type=int, default=DEFAULT_MAX_PLAYS,
-                    help="máximo de reproducciones de una canción en el historial")
+                    help="máximo de reproducciones de una canción en el historial "
+                         "(se ignora en modo ronda sin repetición)")
+    ap.add_argument("--cycle", default=str(PROJECT_ROOT / "data" / "cycle_state.json"),
+                    help="estado de la ronda sin repetición (JSON)")
     ap.add_argument("--seed", type=int)
     args = ap.parse_args()
 
@@ -137,6 +140,23 @@ def main():
     recent = [sid for _, sid in order[-NO_REPEAT_ARTIST:]]
     last = by_id.get(last_id)
     history = [by_id[sid] for sid in recent if sid in by_id]
+
+    # --- Ronda sin repetición: las canciones solo vuelven a ser elegibles
+    # cuando terminó la ronda anterior (se reprodujo todo el catálogo).
+    cycle_path = Path(args.cycle)
+    cycle_played = set()
+    round_no = 1
+    if cycle_path.exists():
+        try:
+            _data = json.loads(cycle_path.read_text(encoding="utf-8"))
+            cycle_played = set(_data.get("played", []))
+            round_no = int(_data.get("round", 1)) or 1
+        except (json.JSONDecodeError, OSError, TypeError, ValueError):
+            cycle_played = set()
+            round_no = 1
+    current_ids = {s["id"] for s in songs}
+    cycle_played &= current_ids
+    round_over = False
 
     target_climate = None
     target_dims = None
@@ -199,7 +219,7 @@ def main():
     def eligible(s, current_pos):
         if s["id"] in chosen_ids:
             return False
-        if counts.get(s["id"], 0) >= args.max_plays:
+        if s["id"] in cycle_played:
             return False
         lp = last_play.get(s["id"])
         if lp is not None:
@@ -218,13 +238,21 @@ def main():
         if not scorable:
             scorable = [s for s in songs if eligible(s, hist_len + len(queue))]
         if not scorable:
-            break
+            if round_over:
+                break
+            round_over = True
+            round_no += 1
+            cycle_played = set(chosen_ids)
+            print(f"  [ronda agotada] arrancando ronda {round_no} "
+                  f"({len(songs)} candidatas)")
+            continue
         scored = sorted(((score(s), s) for s in scorable),
                         key=lambda x: x[0][0], reverse=True)
         top = scored[:args.topk]
         weights = [math.exp(total * args.temp) for (total, parts, _), _ in top]
         chosen_s = random.choices(top, weights=weights, k=1)[0][1]
         chosen_ids.add(chosen_s["id"])
+        cycle_played.add(chosen_s["id"])
         queue.append(chosen_s)
         recent_artists = (recent_artists + [chosen_s.get("artist")])[-NO_REPEAT_ARTIST:]
 
@@ -235,6 +263,7 @@ def main():
         for s in rescue[:args.window]:
             queue.append(s)
             chosen_ids.add(s["id"])
+            cycle_played.add(s["id"])
 
     lines = ["#EXTM3U"]
     diario = []
@@ -264,11 +293,15 @@ def main():
     atomic_write(args.queue, "\n".join(lines) + "\n")
     save_json(args.state, [s["id"] for s in queue])
 
+    cycle_path.parent.mkdir(parents=True, exist_ok=True)
+    save_json(args.cycle, {"round": round_no, "played": sorted(cycle_played)})
+
     with open(PROJECT_ROOT / "logs" / "select.log", "a", encoding="utf-8") as fh:
         for entry in diario:
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-    print(f"Cola escrita en {args.queue}: {len(queue)} canciones.")
+    print(f"Cola escrita en {args.queue}: {len(queue)} canciones. "
+          f"Ronda {round_no} ({len(cycle_played)}/{len(songs)} reproducidas este ciclo).")
     for e in diario:
         print(f"  {e['artist']} — {e['title']}  score={e['score']}  "
               f"dist={e['distancia_clima']}  {e['partes']}")

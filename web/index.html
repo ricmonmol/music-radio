@@ -224,6 +224,12 @@
       radio.addEventListener("error", function () {
         stateEl.textContent = "Sin conexión con el stream…";
       });
+      radio.addEventListener("stalled", function () {
+        stateEl.textContent = "Reconectando en vivo…";
+      });
+      radio.addEventListener("waiting", function () {
+        stateEl.textContent = "Cargando en vivo…";
+      });
       playBtn.addEventListener("click", function () {
         if (radio.paused) {
           radio.play().catch(function () {
@@ -233,9 +239,6 @@
         } else {
           radio.pause();
         }
-      });
-      radio.addEventListener("seeking", function () {
-        radio.currentTime = 0;
       });
       setInterval(tick, 2000);
       tick();

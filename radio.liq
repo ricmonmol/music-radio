@@ -14,14 +14,18 @@ def write_nowplaying(m) =
   file.write(data=(fname ^ "|" ^ artist ^ " — " ^ title), nowplaying_file)
 end
 
+# Regenerar la cola automáticamente cada N canciones distintas reproducidas.
+# Liquidsoap levanta el nuevo queue.m3u solo (reload_mode="watch").
+REGEN_EVERY = 10
+
 last_played_fname = ref("")
+track_count = ref(0)
 
 def log_track(m) =
   fname = if m["filename"] != "" then m["filename"] else "?" end
   title = if m["title"] != "" then m["title"] else "?" end
   artist = if m["artist"] != "" then m["artist"] else "?" end
-  # El playlist on_track puede dispararse varias veces por el mismo track
-  # (carga inicial / reload de queue.m3u); se ignora el duplicado consecutivo.
+  # on_track puede dispararse varias veces por el mismo track; ignorar duplicado.
   if fname == last_played_fname() then
     ()
   else
@@ -29,6 +33,11 @@ def log_track(m) =
     line = fname ^ "|" ^ artist ^ " — " ^ title ^ "\n"
     file.write(data=line, append=true, played_file)
     write_nowplaying(m)
+    track_count := !track_count + 1
+    if !track_count mod REGEN_EVERY == 0 then
+      log("selector: regenerando cola (track #{!track_count})...")
+      ignore(process.run("bash -c './venv/bin/python scripts/selector.py --clima clima.json >> logs/select.log 2>&1 &'"))
+    end
   end
 end
 

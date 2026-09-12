@@ -34,7 +34,7 @@ WEIGHTS = {
 DEFAULT_WINDOW = 15
 DEFAULT_TOP_K = 5
 DEFAULT_TEMP = 1.0
-NO_REPEAT_ARTIST = 5
+NO_REPEAT_ARTIST = 8
 DEFAULT_MIN_GAP = 10
 DEFAULT_MAX_PLAYS = 3
 AFFINITY_THRESHOLD = 0.7
@@ -230,13 +230,23 @@ def main():
         return True
 
     while len(queue) < args.window and len(chosen_ids) < len(songs):
-        scorable = [
-            s for s in songs
-            if eligible(s, hist_len + len(queue))
-            and s.get("artist") not in recent_artists
-        ]
-        if not scorable:
-            scorable = [s for s in songs if eligible(s, hist_len + len(queue))]
+        current_pos = hist_len + len(queue)
+        pool = [s for s in songs if eligible(s, current_pos)]
+
+        # Ventana de artistas vistos recientemente (historia + lo elegido ya
+        # en esta cola). Relajación gradual para espaciar artistas sin terminar
+        # en racimos cuando queda un pool residual dominado por uno solo:
+        #   1º) el artista no aparece en la ventana (máx. 1 vez por NO_REPEAT_ARTIST)
+        #   2º) tolerancia: máx. 2 apariciones en la ventana
+        #   3º) si ni eso alcanza, el pool residual quedó dominado por pocos
+        #       artistas: se cierra la ronda y se vuelve a abrir el catálogo
+        #       completo en lugar de encadenar al mismo artista.
+        for max_times in (1, 2):
+            scorable = [s for s in pool
+                        if recent_artists.count(s.get("artist")) < max_times]
+            if scorable:
+                break
+
         if not scorable:
             if round_over:
                 break

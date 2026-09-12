@@ -255,9 +255,20 @@
       }
       radio.addEventListener("play",  tick);
       radio.addEventListener("pause", tick);
+
+      function stopStream() {
+        radio.removeAttribute("src");
+        radio.load();
+      }
+      function startStream() {
+        radio.src = "/radio?t=" + Date.now();
+        radio.load();
+        radio.play().catch(function(){});
+      }
+
       playBtn.addEventListener("click", function () {
-        if (radio.paused) { radio.play().catch(function(){}); }
-        else              { radio.pause(); }
+        if (!radio.paused) { stopStream(); }
+        else               { startStream(); }
       });
       setInterval(tick, 2000);
       tick();

@@ -3,8 +3,9 @@
 # Ya no es necesario para el ciclo normal (reload_mode="watch" en radio.liq
 # recarga queue.m3u automáticamente). Útil solo para cambios de configuración.
 set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/bash_utils.sh
-source scripts/bash_utils.sh
+source "$SCRIPT_DIR/bash_utils.sh"
 cd_project_root
 ensure_env
 

@@ -35,7 +35,6 @@ from lib import (  # noqa: E402
     get_client_id,
     load_json,
     now_iso,
-    restart_liquidsoap,
     run_selector,
     save_json,
 )
@@ -114,10 +113,9 @@ def queue_paths():
 
 
 def regenerate_queue():
-    count = run_selector(str(CLIMA_PATH))
-    if count >= 0:
-        restart_liquidsoap()
-    return count
+    # Solo regenerar el m3u: Liquidsoap lo recarga solo (reload_mode="watch").
+    # Reiniciar liquidsoap desconecta a todos los oyentes del stream.
+    return run_selector(str(CLIMA_PATH))
 
 
 def log(msg):

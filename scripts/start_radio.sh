@@ -2,8 +2,9 @@
 # Arranca la radio: genera la cola inicial y lanza Liquidsoap y el panel web
 # desacoplados.
 set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/bash_utils.sh
-source scripts/bash_utils.sh
+source "$SCRIPT_DIR/bash_utils.sh"
 cd_project_root
 ensure_env
 

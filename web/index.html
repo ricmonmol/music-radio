@@ -253,14 +253,43 @@
         var playing = !radio.paused;
         playLabel.textContent = playing ? "pausar" : "escuchar";
       }
-      radio.addEventListener("play",  tick);
+      radio.addEventListener("play",  function(){ reconnectTry = 0; tick(); });
       radio.addEventListener("pause", tick);
 
+      // ── reconexión automática ─────────────────────────────────────────
+      var userStopped = false;
+      var reconnectTry = 0;
+      var reconnectTimer = null;
+
+      function scheduleReconnect() {
+        if (reconnectTimer) return;
+        var delay = Math.min(3000 * Math.pow(2, reconnectTry), 60000);
+        if (reconnectTry < 10) reconnectTry++;
+        reconnectTimer = setTimeout(function () {
+          reconnectTimer = null;
+          if (userStopped) { reconnectTry = 0; return; }
+          startStream();
+        }, delay);
+      }
+
+      radio.addEventListener("error", function () {
+        if (userStopped) { reconnectTry = 0; return; }
+        scheduleReconnect();
+      });
+      radio.addEventListener("ended", function () {
+        if (userStopped) { reconnectTry = 0; return; }
+        scheduleReconnect();
+      });
+
       function stopStream() {
+        userStopped = true;
+        reconnectTry = 0;
+        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
         radio.removeAttribute("src");
         radio.load();
       }
       function startStream() {
+        userStopped = false;
         radio.src = "/radio?t=" + Date.now();
         radio.load();
         radio.play().catch(function(){});

@@ -11,8 +11,9 @@
 # Auto-recuperación: si la cola sale en 0, respalda logs/played.txt, lo limpia
 # y reintenta una vez (el historial web se pierde solo en ese caso extremo).
 set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/bash_utils.sh
-source scripts/bash_utils.sh
+source "$SCRIPT_DIR/bash_utils.sh"
 cd_project_root
 ensure_env
 

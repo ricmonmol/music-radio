@@ -1,8 +1,9 @@
 #!/bin/bash
 # Detiene la radio: Liquidsoap (via PID file + fallback pgrep) y el panel web.
 set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/bash_utils.sh
-source scripts/bash_utils.sh
+source "$SCRIPT_DIR/bash_utils.sh"
 cd_project_root
 
 PIDFILE="liquidsoap.pid"

@@ -10,8 +10,9 @@
 # El client id se guarda una vez en scripts/.jamendo_client (local, chmod 600).
 set -euo pipefail
 cd "$(dirname "$0")/.."
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/bash_utils.sh
-source scripts/bash_utils.sh
+source "$SCRIPT_DIR/bash_utils.sh"
 
 PY="venv/bin/python"
 SCRIPT="scripts/fetch_jamendo.py"

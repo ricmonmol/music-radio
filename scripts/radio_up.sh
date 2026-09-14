@@ -2,8 +2,9 @@
 # radio_up.sh: levanta todo lo necesario para escuchar la radio
 # (Icecast -> cola -> liquidsoap -> web) y verifica que respondan.
 set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/bash_utils.sh
-source scripts/bash_utils.sh
+source "$SCRIPT_DIR/bash_utils.sh"
 cd_project_root
 ensure_env
 

@@ -9,10 +9,18 @@
       href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📻</text></svg>"
     />
     <style>
-      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
 
       body {
-        font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace;
+        font-family:
+          ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, Consolas,
+          monospace;
         background: #0c0c0c;
         color: #d4d4d4;
         max-width: 52rem;
@@ -22,12 +30,22 @@
         line-height: 1.7;
       }
 
-      a { color: inherit; text-decoration: none; }
-      a:hover { color: #7dd3fc; }
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+      a:hover {
+        color: #7dd3fc;
+      }
 
       /* ── header ── */
-      .header { color: #e5e5e5; margin-bottom: 2rem; }
-      .header .dollar { color: #4ade80; }
+      .header {
+        color: #e5e5e5;
+        margin-bottom: 2rem;
+      }
+      .header .dollar {
+        color: #4ade80;
+      }
 
       /* ── box now playing ── */
       .now-box {
@@ -47,7 +65,9 @@
         text-overflow: ellipsis;
       }
 
-      .now-tree { color: #555; }
+      .now-tree {
+        color: #555;
+      }
 
       .now-title {
         color: #e5e5e5;
@@ -65,7 +85,9 @@
         color: #e5e5e5;
       }
 
-      .vol-lbl { color: #b0b0b0; }
+      .vol-lbl {
+        color: #b0b0b0;
+      }
 
       .vol-wrap {
         position: relative;
@@ -91,7 +113,10 @@
         margin: 0;
       }
 
-      .vol-pct { color: #e5e5e5; min-width: 2.5rem; }
+      .vol-pct {
+        color: #e5e5e5;
+        min-width: 2.5rem;
+      }
 
       #muteBtn {
         background: none;
@@ -103,7 +128,9 @@
         padding: 0;
         line-height: 1;
       }
-      #muteBtn:hover { color: #e5e5e5; }
+      #muteBtn:hover {
+        color: #e5e5e5;
+      }
 
       /* ── play button ── */
       #playBtn {
@@ -118,8 +145,12 @@
         margin-bottom: 2rem;
         display: block;
       }
-      #playBtn:hover { color: #ffffff; }
-      #playBtn .arrow { color: #4ade80; }
+      #playBtn:hover {
+        color: #ffffff;
+      }
+      #playBtn .arrow {
+        color: #4ade80;
+      }
 
       /* ── history ── */
       .hist-lbl {
@@ -139,7 +170,10 @@
         line-height: 1.7;
       }
 
-      .hist-tree { color: #555; flex: 0 0 auto; }
+      .hist-tree {
+        color: #555;
+        flex: 0 0 auto;
+      }
 
       .hist-text {
         flex: 1;
@@ -155,7 +189,9 @@
         flex: 0 0 auto;
         padding-left: 0.5rem;
       }
-      .hist-link:hover { color: #ffffff; }
+      .hist-link:hover {
+        color: #ffffff;
+      }
 
       /* ── footer ── */
       footer {
@@ -164,7 +200,10 @@
         font-size: 0.78rem;
       }
 
-      .empty { color: #555; font-style: normal; }
+      .empty {
+        color: #555;
+        font-style: normal;
+      }
     </style>
   </head>
   <body>
@@ -173,7 +212,8 @@
     <div class="now-box">
       <div class="now-artist" id="npArtist">—</div>
       <div>
-        <span class="now-tree">└─ </span><span class="now-title" id="npTitle"></span>
+        <span class="now-tree">└─ </span
+        ><span class="now-title" id="npTitle"></span>
       </div>
     </div>
 
@@ -197,29 +237,51 @@
     <div id="hist"><span class="empty">—</span></div>
 
     <footer>
-      <a href="https://www.jamendo.com" target="_blank" rel="noopener">jamendo</a> · cc ·
-      <a href="https://github.com/ricmonmol" target="_blank" rel="noopener">ricmonmol</a>
+      <a href="https://www.jamendo.com" target="_blank" rel="noopener"
+        >jamendo</a
+      >
+      · cc ·
+      <a
+        href="https://github.com/ricmonmol/music-radio"
+        target="_blank"
+        rel="noopener"
+        ><svg
+          width="14"
+          height="14"
+          viewBox="0 0 16 16"
+          fill="currentColor"
+          style="vertical-align: -2px"
+        >
+          <path
+            d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+          />
+        </svg>
+        ricmonmol</a
+      >
     </footer>
 
     <script>
       function esc(s) {
         return String(s == null ? "" : s)
-          .replace(/&/g, "&amp;").replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
       }
 
       function volBar(val, total) {
-        var filled = Math.round(val * total / 100);
+        var filled = Math.round((val * total) / 100);
         return "█".repeat(filled) + "░".repeat(total - filled);
       }
 
-      var radio     = document.getElementById("radio");
-      var playBtn   = document.getElementById("playBtn");
+      var radio = document.getElementById("radio");
+      var playBtn = document.getElementById("playBtn");
       var playLabel = document.getElementById("playLabel");
       var volSlider = document.getElementById("volSlider");
-      var volLabel  = document.getElementById("volLabel");
-      var volBarEl  = document.getElementById("volBar");
-      var muteBtn   = document.getElementById("muteBtn");
+      var volLabel = document.getElementById("volLabel");
+      var volBarEl = document.getElementById("volBar");
+      var muteBtn = document.getElementById("muteBtn");
 
       // Volumen guardado (default 80%)
       var savedVol = parseFloat(localStorage.getItem("radioVol") || "0.8");
@@ -253,7 +315,10 @@
         var playing = !radio.paused;
         playLabel.textContent = playing ? "pausar" : "escuchar";
       }
-      radio.addEventListener("play",  function(){ reconnectTry = 0; tick(); });
+      radio.addEventListener("play", function () {
+        reconnectTry = 0;
+        tick();
+      });
       radio.addEventListener("pause", tick);
 
       // ── reconexión automática ─────────────────────────────────────────
@@ -267,24 +332,36 @@
         if (reconnectTry < 10) reconnectTry++;
         reconnectTimer = setTimeout(function () {
           reconnectTimer = null;
-          if (userStopped) { reconnectTry = 0; return; }
+          if (userStopped) {
+            reconnectTry = 0;
+            return;
+          }
           startStream();
         }, delay);
       }
 
       radio.addEventListener("error", function () {
-        if (userStopped) { reconnectTry = 0; return; }
+        if (userStopped) {
+          reconnectTry = 0;
+          return;
+        }
         scheduleReconnect();
       });
       radio.addEventListener("ended", function () {
-        if (userStopped) { reconnectTry = 0; return; }
+        if (userStopped) {
+          reconnectTry = 0;
+          return;
+        }
         scheduleReconnect();
       });
 
       function stopStream() {
         userStopped = true;
         reconnectTry = 0;
-        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
         radio.removeAttribute("src");
         radio.load();
       }
@@ -292,12 +369,15 @@
         userStopped = false;
         radio.src = "/radio?t=" + Date.now();
         radio.load();
-        radio.play().catch(function(){});
+        radio.play().catch(function () {});
       }
 
       playBtn.addEventListener("click", function () {
-        if (!radio.paused) { stopStream(); }
-        else               { startStream(); }
+        if (!radio.paused) {
+          stopStream();
+        } else {
+          startStream();
+        }
       });
       setInterval(tick, 2000);
       tick();
@@ -305,23 +385,30 @@
       // ── now playing ──────────────────────────────────────────────────
       async function load() {
         try {
-          var np = await fetch("/now").then(function(r){ return r.json(); });
+          var np = await fetch("/now").then(function (r) {
+            return r.json();
+          });
           var artistEl = document.getElementById("npArtist");
-          var titleEl  = document.getElementById("npTitle");
+          var titleEl = document.getElementById("npTitle");
           if (!np || !np.title) {
             artistEl.textContent = "—";
-            titleEl.textContent  = "";
+            titleEl.textContent = "";
           } else {
             artistEl.textContent = (np.artist || "?").toUpperCase();
             if (np.track_url) {
-              titleEl.innerHTML = '<a href="' + esc(np.track_url) + '" target="_blank" rel="noopener">' + esc(np.title) + '</a>';
+              titleEl.innerHTML =
+                '<a href="' +
+                esc(np.track_url) +
+                '" target="_blank" rel="noopener">' +
+                esc(np.title) +
+                "</a>";
             } else {
               titleEl.textContent = np.title;
             }
           }
-        } catch(e) {
+        } catch (e) {
           document.getElementById("npArtist").textContent = "—";
-          document.getElementById("npTitle").textContent  = "";
+          document.getElementById("npTitle").textContent = "";
         }
       }
       load();
@@ -331,25 +418,35 @@
       async function loadHistory() {
         var el = document.getElementById("hist");
         try {
-          var items = await fetch("/history?n=8").then(function(r){ return r.json(); });
+          var items = await fetch("/history?n=8").then(function (r) {
+            return r.json();
+          });
           if (!items || !items.length) {
             el.innerHTML = '<span class="empty">—</span>';
             return;
           }
-          var lis = items.map(function(it) {
-            var title  = it.title || it.label || "?";
-            var artist = it.artist ? it.artist + " — " : "";
-            var link   = it.track_url
-              ? ' <a class="hist-link" href="' + esc(it.track_url) + '" target="_blank" rel="noopener">↗</a>'
-              : '';
-            return '<li>'
-              + '<span class="hist-tree">└─ </span>'
-              + '<span class="hist-text">' + esc(artist + title) + '</span>'
-              + link
-              + '</li>';
-          }).join("");
-          el.innerHTML = '<ul class="hist-list">' + lis + '</ul>';
-        } catch(e) {
+          var lis = items
+            .map(function (it) {
+              var title = it.title || it.label || "?";
+              var artist = it.artist ? it.artist + " — " : "";
+              var link = it.track_url
+                ? ' <a class="hist-link" href="' +
+                  esc(it.track_url) +
+                  '" target="_blank" rel="noopener">↗</a>'
+                : "";
+              return (
+                "<li>" +
+                '<span class="hist-tree">└─ </span>' +
+                '<span class="hist-text">' +
+                esc(artist + title) +
+                "</span>" +
+                link +
+                "</li>"
+              );
+            })
+            .join("");
+          el.innerHTML = '<ul class="hist-list">' + lis + "</ul>";
+        } catch (e) {
           el.innerHTML = '<span class="empty">—</span>';
         }
       }

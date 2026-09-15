@@ -19,8 +19,18 @@ from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lib import PROJECT_ROOT, load_json  # noqa: E402
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def load_json(path):
+    p = Path(path)
+    if not p.exists():
+        return []
+    try:
+        data = p.read_text(encoding="utf-8").strip()
+        return json.loads(data) if data else []
+    except (json.JSONDecodeError, OSError):
+        return []
 
 
 class SongCache:
@@ -181,9 +191,15 @@ def make_handler(songs_path, nowplaying, played, web_dir):
                 return {}
             fname = line.split("|", 1)[0].strip()
             song = cache.get_by_fname(fname)
-            if song is None:
-                return {"label": line}
-            return public(song)
+            if song is not None:
+                return public(song)
+            # Canción ya no está en songs.json (fue rotada) — parsear del label
+            label = line.split("|", 1)[1].strip() if "|" in line else line
+            if " — " in label:
+                artist, title = label.split(" — ", 1)
+                return {"artist": artist.strip(), "title": title.strip()}
+            return {"title": label}
+
 
         def _history(self):
             n = 20
@@ -215,7 +231,16 @@ def make_handler(songs_path, nowplaying, played, web_dir):
                     continue
                 last_seen = fname
                 song = cache.get_by_fname(fname)
-                out.append(public(song) if song else {"label": line})
+                if song is not None:
+                    out.append(public(song))
+                else:
+                    # Canción rotada — parsear del label
+                    label = line.split("|", 1)[1].strip() if "|" in line else line
+                    if " — " in label:
+                        artist, title = label.split(" — ", 1)
+                        out.append({"artist": artist.strip(), "title": title.strip()})
+                    else:
+                        out.append({"title": label})
                 if len(out) >= n:
                     break
             return out

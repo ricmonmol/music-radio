@@ -1,11 +1,8 @@
 #!/bin/bash
-# Regenera la cola dinámica (queue.m3u).
-# Liquidsoap la recarga automáticamente con reload_mode="watch".
+# refresh_queue.sh — ejecutado por cron cada 30 minutos como backup.
+# Liquidsoap ya llama a gestor.py en cada track; este cron es un seguro
+# por si la radio estuvo pausada o el trigger falló.
 set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=scripts/bash_utils.sh
-source "$SCRIPT_DIR/bash_utils.sh"
-cd_project_root
-# Verifica el ciclo de vida del catálogo y regenera la cola.
-# Si la música ya fue escuchada en su mayoría, descarga un lote nuevo de Jamendo.
-exec "$PROJECT_ROOT/scripts/catalog_check.sh"
+cd "$SCRIPT_DIR/.."
+exec ./venv/bin/python scripts/gestor.py >> logs/gestor.log 2>&1

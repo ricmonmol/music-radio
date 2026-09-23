@@ -18,8 +18,6 @@ def on_track(m) =
     # Registrar la canción que acaba de empezar
     file.write(data=(fname ^ "|" ^ artist ^ " — " ^ title), nowplaying_file)
     file.write(data=(fname ^ "|" ^ artist ^ " — " ^ title ^ "\n"), append=true, played_file)
-    # Chequear si hay que descargar más (gestor sale rápido si la cola está bien)
-    ignore(process.run("bash -c './venv/bin/python scripts/gestor.py >> logs/gestor.log 2>&1 &'"))
   end
 end
 

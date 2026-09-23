@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """gestor.py — ciclo de vida de la radio musical.
 
-Flujo completo en un solo lugar:
+Flujo (simple):
   1. Lee clima.json  →  qué música buscar
-  2. Calcula cuántas canciones sin reproducir quedan en el catálogo
-  3. Si quedan pocas (≤ LOW_WATERMARK):
+  2. Marca como escuchadas (`heard`) las canciones que aparecen en played.txt
+     (referencia permanente: una escuchada nunca vuelve a la cola)
+  3. Si quedan pocas sin reproducir (≤ LOW_WATERMARK):
        a. Descarga un lote de Jamendo filtrado por climate_distance
-       b. Borra los mp3s ya reproducidos para liberar disco
+       b. Descarta las escuchadas: las saca del catálogo y borra sus mp3s
        c. Actualiza songs.json y jamendo_seen.json
-  4. Escribe queue.m3u ordenado por distancia de clima
+  4. Recién ahí escribe queue.m3u, y solo si el contenido cambió
      (hook ML: reemplazá climate_distance() con un modelo cuando esté listo)
 
 Fuentes de verdad:
-  • songs.json       — catálogo de mp3s en disco
-  • jamendo_seen.json — IDs vistos alguna vez (nunca se vuelven a bajar)
-  • played.txt        — qué sonó (escrito por liquidsoap)
+  • songs.json         — catálogo de mp3s en disco (campo `heard` = escuchadas)
+  • jamendo_seen.json  — IDs vistos alguna vez (nunca se vuelven a bajar)
+  • played.txt         — registro crudo de lo que sonó (lo mantiene el panel web)
 
 Uso:
   python scripts/gestor.py              # chequea y actúa si hace falta
@@ -22,6 +23,7 @@ Uso:
   python scripts/gestor.py --status     # estado y salir
 """
 import argparse
+import fcntl
 import html
 import json
 import os
@@ -107,11 +109,15 @@ def save_json(path, data):
     )
 
 
-def atomic_write(path, text):
-    p   = Path(path)
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, p)
+def write_in_place(path, text):
+    """Escribe truncando el MISMO inode (sin os.replace).
+
+    Es clave para liquidsoap: con reload_mode="watch" mira el inode original;
+    si reemplazamos el archivo por otro inode (os.replace), deja de notar
+    los cambios y la radio queda clavada en la cola vieja.
+    """
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
 
 
 # ── clima ─────────────────────────────────────────────────────────────────────
@@ -285,17 +291,68 @@ def save_seen(seen: set):
 
 # ── historial de reproducción ─────────────────────────────────────────────────
 
-def get_played_paths() -> set:
-    """Rutas absolutas que ya se reprodujeron (desde played.txt)."""
+def acquire_lock() -> object | None:
+    """Lock de instancia única: evita dos gestores corriendo a la vez."""
+    data = SEEN_PATH.parent
+    data.mkdir(parents=True, exist_ok=True)
+    fh = open(data / "gestor.lock", "w", encoding="utf-8")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fh
+    except OSError:
+        return None
+
+
+def consume_played(songs: list) -> int:
+    """Marca como `heard` las canciones que aparecen en played.txt (o sin archivo).
+
+    Es la referencia permanente de lo escuchado: una canción marcada `heard`
+    nunca vuelve a entrar en la cola ni se vuelve a bajar (jamendo_seen).
+    No borra played.txt: ese archivo lo mantiene el historial del panel web y
+    cleanup_logs.sh controla su tamaño. Devuelve cuántas marcó nuevas.
+    """
     p = Path(PLAYED_PATH)
-    if not p.exists():
-        return set()
-    paths = set()
+    if not p.exists() or p.stat().st_size == 0:
+        return 0
+    played = set()
     for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
         raw = line.strip()
         if raw:
-            paths.add(raw.split("|", 1)[0].strip())
-    return paths
+            played.add(raw.split("|", 1)[0].strip())
+    marked, changed = 0, False
+    for s in songs:
+        heard = bool(s.get("heard")) \
+            or str((ROOT / s["file"]).resolve()) in played \
+            or not (ROOT / s["file"]).exists()
+        if heard and not s.get("heard"):
+            s["heard"] = True
+            marked += 1
+            changed = True
+    if changed:
+        save_songs(songs)
+    return marked
+
+
+def sweep_orphans(songs: list, protect_path: str | None):
+    """Borra mp3s en music/ que ya no están en el catálogo ni suenan ahora."""
+    keep = {str((ROOT / s["file"]).resolve()) for s in songs}
+    removed = 0
+    for p in MUSIC_DIR.rglob("*.mp3"):
+        if str(p.resolve()) in keep or str(p.resolve()) == protect_path:
+            continue
+        try:
+            p.unlink()
+            removed += 1
+        except OSError:
+            pass
+    for d in sorted(MUSIC_DIR.rglob("*"), reverse=True):
+        if d.is_dir():
+            try:
+                d.rmdir()
+            except OSError:
+                pass
+    if removed:
+        log(f"cleanup: {removed} mp3s huérfanos eliminados")
 
 
 def get_nowplaying_path() -> str | None:
@@ -307,18 +364,6 @@ def get_nowplaying_path() -> str | None:
     if content:
         return content.split("|", 1)[0].strip()
     return None
-
-
-def backup_and_clear_played():
-    """Guarda backup de played.txt y lo vacía para la nueva ronda."""
-    p = Path(PLAYED_PATH)
-    if p.exists() and p.stat().st_size > 0:
-        ts     = datetime.now().strftime("%Y%m%d%H%M%S")
-        backup = ROOT / "logs" / f"played.bak.{ts}.txt"
-        import shutil
-        shutil.copy(p, backup)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text("", encoding="utf-8")
 
 
 # ── descarga de Jamendo ───────────────────────────────────────────────────────
@@ -399,8 +444,11 @@ def fetch_batch(client_id: str, target_climate: dict, seen: set, n: int) -> list
 
 # ── cola ──────────────────────────────────────────────────────────────────────
 
-def write_queue(songs: list, target_climate: dict) -> int:
+def write_queue(songs: list, target_climate: dict) -> tuple[int, bool]:
     """Escribe queue.m3u: primero por distancia de clima, luego espaciado por artista.
+
+    Solo pisa el archivo si el contenido cambió (así liquidsoap recarga solo
+    cuando hay novedades reales). Devuelve (n_canciones, hubo_cambio).
 
     Orden = ML hook: reemplazá sort_key con un modelo de ranking cuando esté listo.
     Firma esperada: score(song: dict, target: dict) -> float  (menor = antes en la cola)
@@ -446,8 +494,17 @@ def write_queue(songs: list, target_climate: dict) -> int:
         path = (ROOT / s["file"]).resolve()
         lines.append(f"#EXTINF:,{s['artist']} — {s['title']}")
         lines.append(str(path))
-    atomic_write(QUEUE_PATH, "\n".join(lines) + "\n")
-    return len(ordered)
+    text = "\n".join(lines) + "\n"
+
+    changed = True
+    try:
+        if QUEUE_PATH.read_text(encoding="utf-8", errors="replace") == text:
+            changed = False
+    except OSError:
+        changed = True
+    if changed:
+        write_in_place(QUEUE_PATH, text)
+    return len(ordered), changed
 
 
 # ── limpieza de mp3s ──────────────────────────────────────────────────────────
@@ -492,30 +549,39 @@ def main():
                     help=f"distancia de clima máxima (default {MAX_DIST})")
     args = ap.parse_args()
 
+    lock = acquire_lock()
+    if lock is None:
+        print("gestor: ya hay una instancia corriendo; saliendo.")
+        return 0
+
     target_climate = load_clima()
     songs          = load_songs()
-    played_paths   = get_played_paths()
     now_playing    = get_nowplaying_path()
 
-    # Canciones que todavía no se reprodujeron y tienen mp3 en disco
-    unplayed = [
-        s for s in songs
-        if str((ROOT / s["file"]).resolve()) not in played_paths
-        and (ROOT / s["file"]).exists()
-    ]
+    # Registrar lo que sonó (referencia permanente: campo `heard` en songs.json)
+    marked = consume_played(songs)
+    if marked:
+        log(f"gestor: {marked} canciones marcadas como escuchadas")
+
+    def exists(song):
+        return (ROOT / song["file"]).exists()
+
+    # Canciones todavía sin reproducir y con mp3 en disco
+    unplayed = [s for s in songs if not s.get("heard") and exists(s)]
 
     # ── status ────────────────────────────────────────────────────────────────
     if args.status:
-        played = [s for s in songs if str((ROOT / s["file"]).resolve()) in played_paths]
+        heard   = [s for s in songs if s.get("heard")]
+        missing = [s for s in songs if not exists(s)]
         total_mb = sum(
             (ROOT / s["file"]).stat().st_size / 1e6
-            for s in songs
-            if (ROOT / s["file"]).exists()
+            for s in songs if exists(s)
         )
         seen = load_seen()
         print(f"Canciones en catálogo : {len(songs)}")
-        print(f"  reproducidas        : {len(played)}")
+        print(f"  escuchadas          : {len(heard)}")
         print(f"  sin reproducir      : {len(unplayed)}")
+        print(f"  sin archivo (drop)  : {len(missing)}")
         print(f"Espacio en disco      : {total_mb:.1f} MB")
         print(f"Jamendo IDs vistos    : {len(seen)}")
         print(f"Sonando ahora         : {now_playing or '(nada)'}")
@@ -525,10 +591,16 @@ def main():
     log(f"gestor: {len(unplayed)} sin reproducir de {len(songs)} en catálogo")
 
     # ── ¿hace falta descargar? ────────────────────────────────────────────────
+    # Si la cola ya tiene canciones: no tocar nada (reescribir en cada track
+    # es lo que rompía el reload de liquidsoap).
+    queue_vacio = not QUEUE_PATH.exists() or QUEUE_PATH.stat().st_size == 0
     if len(unplayed) > args.low_watermark and not args.force:
-        # Cola suficiente — solo refrescar queue.m3u por si acaso
-        n = write_queue(unplayed, target_climate)
-        log(f"gestor: cola suficiente, queue.m3u actualizado ({n} canciones).")
+        if queue_vacio:
+            n, _ = write_queue(unplayed, target_climate)
+            log(f"gestor: queue.m3u vacío, escrito con {n} canciones.")
+        else:
+            log("gestor: cola suficiente, sin cambios.")
+        sweep_orphans(songs, now_playing)
         return 0
 
     # ── descargar nuevo lote ──────────────────────────────────────────────────
@@ -545,17 +617,15 @@ def main():
     log(f"gestor: {len(new_songs)} canciones nuevas descargadas")
 
     if not new_songs and not unplayed:
-        log("ERROR: sin canciones disponibles.")
+        # Sin nuevas y sin cola: no tocar nada, se reintenta en el próximo ciclo.
+        log("ERROR: sin canciones disponibles (se reintentará).")
         return 1
 
-    # ── borrar las ya reproducidas para liberar disco ─────────────────────────
-    played_songs = [
-        s for s in songs
-        if str((ROOT / s["file"]).resolve()) in played_paths
-    ]
-    if played_songs:
-        log(f"gestor: borrando {len(played_songs)} mp3s ya reproducidos...")
-        delete_songs(played_songs, protect_path=now_playing)
+    # ── sacar las escuchadas (o sin archivo) y liberar disco ──────────────────
+    salientes = [s for s in songs if s.get("heard") or not exists(s)]
+    if salientes:
+        log(f"gestor: descartando {len(salientes)} canciones escuchadas...")
+        delete_songs(salientes, protect_path=now_playing)
 
     # ── nuevo catálogo: unplayed + recién descargadas ─────────────────────────
     songs = unplayed + new_songs
@@ -566,11 +636,14 @@ def main():
 
     save_songs(songs)
     save_seen(seen)
-    backup_and_clear_played()
 
-    # ── escribir cola ordenada por clima ──────────────────────────────────────
-    n = write_queue(songs, target_climate)
-    log(f"gestor: queue.m3u escrito con {n} canciones. Ciclo completado.")
+    # ── escribir cola ordenada por clima (solo si cambió) ──────────────────────
+    n, cambio = write_queue(songs, target_climate)
+    if cambio:
+        log(f"gestor: queue.m3u escrito con {n} canciones. Ciclo completado.")
+    else:
+        log(f"gestor: cola sin cambios ({n} canciones).")
+    sweep_orphans(songs, now_playing)
     return 0
 
 

@@ -1,6 +1,8 @@
 {
   "mood": ["intimo", "melancolico", "suave"],
   "genero": ["folk", "rock", "singersongwriter", "country"],
+  "peso_clima": 0.6,
+  "peso_genero": 0.4,
   "texture": "organica",
   "energy": 0.35,
   "complexity": 0.45,

@@ -175,30 +175,46 @@ def climate_distance(song_climate: dict, target_climate: dict) -> float:
     ╚══════════════════════════════════════════════════════╝
     """
     a, b = song_climate, target_climate
-    # Peso relativo por dimensión: default 1.0. `genero` pesa la mitad para
-    # que el estilo incline el resultado sin dominar el concepto de clima.
-    WEIGHTS = {"genero": 0.5}
-    d, n = 0.0, 0
+    # Score mixto y distributivo: clima y estilo pesan por separado.
+    # Los pesos se leen de clima.json (peso_clima / peso_genero), fallback 60/40.
+    w_clima  = float(b.get("peso_clima", 0.6))
+    w_genero = float(b.get("peso_genero", 0.4))
+    if w_clima + w_genero <= 0:
+        w_clima, w_genero = 0.6, 0.4
+
+    # Valores continuos en [0,1] (pasos de 0.1) para dimensiones categóricas.
+    # Esto evita el 0/1 binario: un track "electrica" o "instrumental" suma
+    # una penalización parcial, no máxima. Valores fuera del mapa o faltantes
+    # se omiten (nunca se castiga por falta de datos).
+    TEX = {"organica": 0.1, "electrica": 0.9}
+    VOZ = {"vocal": 0.1, "instrumental": 0.7}
+    ERA = {"vintage": 0.1, "clasico": 0.5, "contemporaneo": 0.9}
+
+    a = song_climate
+    dims = []
     for dim in ("energy", "complexity"):
         av, bv = a.get(dim), b.get(dim)
         if av is None or bv is None:
             continue
-        d += abs(float(av) - float(bv))
-        n += 1
-    for dim in ("mood", "instrumentation", "genero"):
+        dims.append(abs(float(av) - float(bv)))
+    for dim in ("mood", "instrumentation"):
         left, right = a.get(dim), b.get(dim)
         if isinstance(left, list) and isinstance(right, list) and left and right:
-            w    = WEIGHTS.get(dim, 1.0)
-            inter = set(left) & set(right)
-            d    += w * (1.0 - len(inter) / max(len(left), len(right), 1))
-            n    += w
-    for dim in ("texture", "voice", "temporalidad"):
+            dims.append(1.0 - len(set(left) & set(right)) / max(len(left), len(right), 1))
+    for dim, scale in (("texture", TEX), ("voice", VOZ), ("temporalidad", ERA)):
         av, bv = a.get(dim), b.get(dim)
-        if av is None or bv is None:
+        if av not in scale or bv not in scale:
             continue
-        d += 0.0 if av == bv else 1.0
-        n += 1
-    return (d / n) if n else 0.5
+        dims.append(abs(scale[av] - scale[bv]))
+    d_clima = (sum(dims) / len(dims)) if dims else 0.5
+
+    # Distancia de estilo: 0 si el track toca algún estilo del target, 1 si no.
+    # Si el target no define estilos, el score queda 100% clima.
+    tg = set(b.get("genero") or [])
+    if tg:
+        d_genero = 0.0 if set(a.get("genero") or []) & tg else 1.0
+        return w_clima * d_clima + w_genero * d_genero
+    return d_clima
 
 
 def climate_from_track(t: dict) -> dict:

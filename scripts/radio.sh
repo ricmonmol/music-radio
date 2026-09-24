@@ -49,6 +49,9 @@ _start() {
         $PYTHON scripts/gestor.py --force >> logs/gestor.log 2>&1 || true
     fi
 
+    # Cargar credenciales (.env) antes de arrancar liquidsoap
+    [ -f .env ] && { set -a; . ./.env; set +a; } || true
+
     # Liquidsoap
     echo "→ Arrancando liquidsoap..."
     mkdir -p logs

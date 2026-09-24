@@ -67,12 +67,49 @@ SPEED_ENERGY = {
 }
 MOOD_MAP = {
     "happy": "alegre",       "joyful": "alegre",       "upbeat": "alegre",
+    "cheerful": "alegre",    "positive": "alegre",     "optimistic": "alegre",
     "sad": "melancolico",    "melancholic": "melancolico", "bittersweet": "melancolico",
+    "melancholy": "melancolico", "sorrowful": "melancolico", "gloomy": "melancolico",
+    "longing": "melancolico","yearning": "melancolico",
+    "wistful": "nostalgico", "nostalgia": "nostalgico", "nostalgic": "nostalgico",
     "calm": "calmo",         "relaxing": "relajado",    "relaxed": "relajado",
-    "dreamy": "sonador",     "dreamlike": "sonador",
-    "intimate": "intimo",    "mellow": "suave",         "soft": "suave",
-    "warm": "calido",        "hopeful": "esperanzador", "nostalgic": "nostalgico",
+    "peaceful": "calmo",     "serene": "calmo",         "soothing": "relajado",
+    "dreamy": "sonador",     "dreamlike": "sonador",    "ethereal": "sonador",
+    "daydreaming": "sonador","introspective": "intimo", "contemplative": "intimo",
+    "intimate": "intimo",    "reflective": "intimo",    "thoughtful": "intimo",
+    "pensive": "intimo",
+    "mellow": "suave",       "soft": "suave",           "gentle": "suave",
+    "tender": "suave",       "quiet": "suave",          "delicate": "suave",
+    "warm": "calido",        "cozy": "calido",          "inviting": "calido",
+    "hopeful": "esperanzador","uplifting": "esperanzador", "inspiring": "esperanzador",
     "dark": "oscuro",        "mysterious": "misterioso","epic": "epico",
+    "emotional": "emotivo",  "romantic": "romantico",   "passionate": "intenso",
+}
+
+# Vocabulario canónico de instrumentos (Jamendo lo entrega en inglés).
+INSTR_MAP = {
+    "acoustic guitar": "guitarra", "acousticguitar": "guitarra", "acustic guitar": "guitarra",
+    "guitar": "guitarra",          "classical guitar": "guitarra", "nylon guitar": "guitarra",
+    "electricguitar": "guitarra electrica", "electric guitar": "guitarra electrica",
+    "bass": "bajo", "bassguitar": "bajo", "bass guitar": "bajo", "uprightbass": "bajo",
+    "drums": "bateria", "drum set": "bateria",
+    "percussion": "percusion", "tambourine": "pandereta", "xylophone": "xilofono", "marimba": "marimba",
+    "piano": "piano",
+    "keyboard": "teclado", "keyboards": "teclado",
+    "synthesizer": "sintetizador", "synth": "sintetizador",
+    "organ": "organo",
+    "strings": "cuerdas", "string section": "cuerdas",
+    "violin": "cuerdas", "viola": "cuerdas", "cello": "cuerdas", "double bass": "cuerdas",
+    "harp": "arpa",
+    "flute": "flauta", "pan flute": "flauta",
+    "saxophone": "saxofon", "sax": "saxofon",
+    "trumpet": "trompeta", "trombone": "trombon",
+    "banjo": "banjo", "mandolin": "mandolina", "ukulele": "ukelele",
+    "harmonica": "armonica", "accordion": "acordeon",
+    "lute": "laud",
+    "bells": "campanas", "glockenspiel": "campanas",
+    "vocal": "voz", "vocals": "voz", "voice": "voz", "singing": "voz",
+    "chorus": "coros", "choir": "coros",
 }
 
 
@@ -138,6 +175,9 @@ def climate_distance(song_climate: dict, target_climate: dict) -> float:
     ╚══════════════════════════════════════════════════════╝
     """
     a, b = song_climate, target_climate
+    # Peso relativo por dimensión: default 1.0. `genero` pesa la mitad para
+    # que el estilo incline el resultado sin dominar el concepto de clima.
+    WEIGHTS = {"genero": 0.5}
     d, n = 0.0, 0
     for dim in ("energy", "complexity"):
         av, bv = a.get(dim), b.get(dim)
@@ -145,12 +185,13 @@ def climate_distance(song_climate: dict, target_climate: dict) -> float:
             continue
         d += abs(float(av) - float(bv))
         n += 1
-    for dim in ("mood", "instrumentation"):
+    for dim in ("mood", "instrumentation", "genero"):
         left, right = a.get(dim), b.get(dim)
         if isinstance(left, list) and isinstance(right, list) and left and right:
+            w    = WEIGHTS.get(dim, 1.0)
             inter = set(left) & set(right)
-            d    += 1.0 - len(inter) / max(len(left), len(right), 1)
-            n    += 1
+            d    += w * (1.0 - len(inter) / max(len(left), len(right), 1))
+            n    += w
     for dim in ("texture", "voice", "temporalidad"):
         av, bv = a.get(dim), b.get(dim)
         if av is None or bv is None:
@@ -173,15 +214,20 @@ def climate_from_track(t: dict) -> dict:
         temp = "vintage" if year < 2000 else ("clasico" if year < 2016 else "contemporaneo")
     except (TypeError, ValueError):
         temp = "contemporaneo"
-    mood = [MOOD_MAP.get(tag.lower(), tag.lower()) for tag in (tags.get("vartags") or [])]
+    mood = [MOOD_MAP.get(tag.lower()) for tag in (tags.get("vartags") or [])]
     mood = list(dict.fromkeys(m for m in mood if m))
+    genero = list(dict.fromkeys(g.lower() for g in (tags.get("genres") or [])))
+    instruments = [INSTR_MAP.get(i.strip().lower(), i.strip().lower())
+                   for i in (tags.get("instruments") or [])]
+    instruments = list(dict.fromkeys(i for i in instruments if i))
     return {
         "mood":            mood,
+        "genero":          genero,
         "texture":         "organica" if eco == "acoustic" else ("electrica" if eco == "electric" else None),
         "energy":          SPEED_ENERGY.get(speed, 0.5),
         "complexity":      0.5,
         "voice":           voci or None,
-        "instrumentation": list(tags.get("instruments") or []),
+        "instrumentation": instruments,
         "temporalidad":    temp,
     }
 

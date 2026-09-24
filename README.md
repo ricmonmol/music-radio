@@ -48,7 +48,7 @@ downloaded twice across cycles.
 
 | File | Purpose |
 |---|---|
-| `clima.json` | Target atmosphere (mood, energy, texture, voice…) |
+| `clima.json` | Target atmosphere (mood, genre, energy, texture, voice…) |
 | `.env` | Credentials — copy from `scripts/.env.example` |
 | `scripts/gestor.py` | Tunables: `LOW_WATERMARK`, `BATCH_SIZE`, `MAX_DIST` |
 
@@ -57,6 +57,7 @@ downloaded twice across cycles.
 ```json
 {
   "mood": ["melancolico", "intimo"],
+  "genero": ["folk"],
   "texture": "organica",
   "energy": 0.35,
   "complexity": 0.45,
@@ -65,6 +66,9 @@ downloaded twice across cycles.
   "temporalidad": "contemporaneo"
 }
 ```
+
+Los estilos (género) se toman del tag `genres` de Jamendo: agregá los que quieras
+como lista en `genero` (p.ej. `["folk", "indie"]`).
 
 ## ML hook
 

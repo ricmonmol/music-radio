@@ -1,9 +1,10 @@
 {
   "mood": ["intimo", "melancolico", "suave"],
+  "genero": ["folk", "rock", "singersongwriter", "country"],
   "texture": "organica",
   "energy": 0.35,
   "complexity": 0.45,
-  "voice": "voz-intima",
+  "voice": "vocal",
   "instrumentation": ["guitarra", "cuerdas", "piano"],
   "temporalidad": "contemporaneo"
 }

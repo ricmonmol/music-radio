@@ -14,15 +14,20 @@ Jamendo filtered by a configurable atmosphere (mood, energy, texture, etc.).
 
 1. `gestor.py` reads `clima.json` and downloads a batch of songs from Jamendo
    filtered by `climate_distance()` (the ML hook — see below).
-2. Only unplayed tracks are written to `queue.m3u`, ordered by climate proximity.
-3. Liquidsoap plays the online queue and marks each track as started immediately;
+2. Each `genero` in `clima.json` is also sent to Jamendo as `fuzzytags`, so the
+   style list does double duty: it both **narrows the search** and **scores the
+   results**. Every tag is its own result window, which multiplies how much of
+   Jamendo is reachable — the unfiltered search only ever returns a small,
+   popularity-ranked slice that runs dry.
+3. Only unplayed tracks are written to `queue.m3u`, ordered by climate proximity.
+4. Liquidsoap plays the online queue and marks each track as started immediately;
    that durable state is kept in `data/playback.json`.
-4. When the online queue is low, `gestor.py` downloads another batch. Played MP3s
+5. When the online queue is low, `gestor.py` downloads another batch. Played MP3s
    are moved to `archive/music/` instead of being deleted and become the offline
    fallback pool.
-5. If the online source is empty or renewal fails, Liquidsoap uses
+6. If the online source is empty or renewal fails, Liquidsoap uses
    `queue.offline.m3u`, ordered by the least-recently-played timestamp.
-6. `scripts/radio.sh start` brings the stream up first and renews the queues in
+7. `scripts/radio.sh start` brings the stream up first and renews the queues in
    the background, so a slow download never keeps the stream offline.
 
 Normal online playback never repeats a track. Repetition is possible only when
@@ -31,6 +36,41 @@ the offline fallback is exhausted or the service has no online material.
 Song IDs are persisted in `data/jamendo_seen.json`; playback timestamps and
 play counts are persisted in `data/playback.json`, so restarting the service or
 cleaning raw logs does not make a track eligible again.
+
+## Ingest behaviour
+
+`data/playback.json` → `source` keeps the ingest cursor:
+
+```json
+"source": {
+  "tag_index": 3,
+  "offsets": {"bluesrock|relevance": 600}
+}
+```
+
+- `tag_index` rotates which `genero` starts each cycle, so every tag gets used
+  instead of the first one filling every batch.
+- `offsets` remembers how deep each `(tag, order)` window was read. Without it
+  every cycle re-reads the top of the ranking, `jamendo_seen.json` swallows it,
+  and the station quietly runs dry.
+
+Two Jamendo quirks the code works around:
+
+- **Rate limiting returns HTTP 200 with an empty body**, not an error. `api_get`
+  retries those with backoff and reports them as `empty`, and a sweep only
+  treats a window as finished after two empty pages in a row.
+- **Some artists publish blocks of 20+ tracks** under a single tag, so one tag
+  would otherwise supply half a batch. `MAX_TRACKS_PER_ARTIST` caps it.
+
+Every cycle logs which tags were queried, why each sweep stopped, and how many
+of the requested songs it actually got:
+
+```
+gestor: consulta con bluesrock, americana; motivos={'ok': 1, 'empty': 2}; candidatos nuevos acumulados=25/25
+```
+
+If that line shows `exhausted` counts climbing, the window really is drained
+rather than rate limited.
 
 ## Usage
 
@@ -60,8 +100,8 @@ cleaning raw logs does not make a track eligible again.
 |---|---|
 | `clima.json` | Target atmosphere (mood, genre, energy, texture, voice…) |
 | `.env` | Credentials — copy from `scripts/.env.example` |
-| `scripts/gestor.py` | Tunables: `LOW_WATERMARK`, `BATCH_SIZE`, `MAX_DIST`, `HISTORY_RETENTION_DAYS` |
-| `data/playback.json` | Durable per-track playback state |
+| `scripts/gestor.py` | Tunables: `LOW_WATERMARK`, `BATCH_SIZE`, `MAX_DIST`, `GENERO_PENALTY_CAP`, `MAX_TRACKS_PER_ARTIST`, `SOURCE_MAX_TAGS`, `SOURCE_MAX_PAGES`, `HISTORY_RETENTION_DAYS` |
+| `data/playback.json` | Durable per-track playback state + ingest cursor (`source`) |
 | `data/jamendo_seen.json` | Permanent Jamendo ID history |
 
 ### clima.json example
@@ -93,6 +133,17 @@ the single point of contact between the scheduling system and the climate
 model. Replace it with your model when ready — nothing else needs to change.
 
 Expected signature: `(dict, dict) -> float` in `[0.0, 1.0]` (0 = perfect match).
+
+The current implementation scores style distance *gradually*, not as a yes/no:
+it measures what fraction of the track's own `genero` tags falls inside the
+target `genero`, so a track tagged `["rock", "electronic"]` is penalised instead
+of scoring a perfect style match on the `rock` alone. The penalty is capped at
+`GENERO_PENALTY_CAP`. If you replace the function with a model, keep this
+property — a binary style match is what lets off-genre material through.
+
+`MAX_DIST` only gates new downloads in `fetch_batch`. `write_queue` sorts the
+existing catalog by the `climate_dist` stored at download time and never
+re-filters it, so tightening `MAX_DIST` never drops already-downloaded tracks.
 
 ## File structure
 

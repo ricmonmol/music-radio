@@ -53,10 +53,15 @@ CLIENT_FILE  = ROOT / "scripts" / ".jamendo_client"
 LOW_WATERMARK  = 6
 BATCH_SIZE     = 25
 MAX_DIST       = 0.55
+GENERO_PENALTY_CAP = 0.6
 OFFLINE_QUEUE_SIZE = 200
 PROTECTED_QUEUE_ITEMS = 2
 HISTORY_RETENTION_DAYS = 7
 NOWPLAYING_MAX_AGE = 900
+SOURCE_ORDERS = ["relevance", "releasedate_desc", "popularity_total"]
+SOURCE_MAX_TAGS = 4
+SOURCE_MAX_PAGES = 6
+MAX_TRACKS_PER_ARTIST = 2
 
 # ── constantes Jamendo ────────────────────────────────────────────────────────
 EMIT_LICENSES = {"cc0", "public-domain", "cc-by", "cc-by-sa", "cc-by-nc", "permission"}
@@ -255,7 +260,7 @@ def track_key(value) -> str:
 
 
 def state_default() -> dict:
-    return {"version": 1, "mode": "online", "tracks": {}}
+    return {"version": 1, "mode": "online", "tracks": {}, "source": {}}
 
 
 def load_state() -> dict:
@@ -267,6 +272,15 @@ def load_state() -> dict:
     data.setdefault("tracks", {})
     if not isinstance(data["tracks"], dict):
         data["tracks"] = {}
+    # Cursor de ingesta: por qué tag de clima se empieza y hasta qué offset se
+    # leyó cada consulta, para no releer siempre la misma cabeza del ranking.
+    data.setdefault("source", {})
+    if not isinstance(data["source"], dict):
+        data["source"] = {}
+    data["source"].setdefault("tag_index", 0)
+    data["source"].setdefault("offsets", {})
+    if not isinstance(data["source"]["offsets"], dict):
+        data["source"]["offsets"] = {}
     return data
 
 
@@ -360,11 +374,18 @@ def climate_distance(song_climate: dict, target_climate: dict) -> float:
         dims.append(abs(scale[av] - scale[bv]))
     d_clima = (sum(dims) / len(dims)) if dims else 0.5
 
-    # Distancia de estilo: 0 si el track toca algún estilo del target, 1 si no.
+    # Distancia de estilo: gradual. Mide qué fracción de los estilos del track
+    # cae dentro del target, así un tag ajeno (p.ej. "electronic" en un track
+    # etiquetado "rock,electronic") penaliza en vez de anular la penalización.
+    # El cap evita que un track con muchos tags quede castigado de más.
     # Si el target no define estilos, el score queda 100% clima.
     tg = set(b.get("genero") or [])
     if tg:
-        d_genero = 0.0 if set(a.get("genero") or []) & tg else 1.0
+        ag = list(a.get("genero") or [])
+        if not ag:
+            d_genero = 1.0
+        else:
+            d_genero = min(1.0 - len(set(ag) & tg) / len(ag), GENERO_PENALTY_CAP)
         return w_clima * d_clima + w_genero * d_genero
     return d_clima
 
@@ -417,20 +438,37 @@ def api_get(client_id: str, params: dict) -> dict:
     q = {"client_id": client_id, "format": "json", "include": "musicinfo"}
     q.update(params)
     url = JAMENDO_API + "?" + urllib.parse.urlencode(q)
-    for attempt in range(3):
+    headers: dict = {}
+    answered = False
+    for attempt in range(4):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
             with urllib.request.urlopen(req, timeout=30) as response:
                 doc = json.loads(response.read().decode("utf-8"))
-            return {
-                "ok": True,
-                "results": doc.get("results") or [],
-                "headers": doc.get("headers") or {},
-            }
+            results = doc.get("results") or []
+            headers = doc.get("headers") or {}
+            answered = True
+            if results:
+                return {
+                    "ok": True,
+                    "results": results,
+                    "headers": headers,
+                    "empty": False,
+                }
+            # Cuerpo vacío con HTTP 200: así responde la API cuando limita el
+            # ritmo. No es error de red, pero tampoco es "no hay más", así que
+            # se reintenta antes de dar la ventana por agotada.
         except (OSError, ValueError):
-            if attempt < 2:
-                time.sleep(1.0)
-    return {"ok": False, "network_error": True, "results": [], "headers": {}}
+            headers = {}
+        if attempt < 3:
+            time.sleep(1.5 * (attempt + 1))
+    return {
+        "ok": answered,
+        "network_error": not answered,
+        "results": [],
+        "headers": headers,
+        "empty": True,
+    }
 
 
 def license_short(curl: str | None) -> str | None:
@@ -831,7 +869,101 @@ def cleanup_playback_events() -> int:
 
 # ── descarga de Jamendo ───────────────────────────────────────────────────────
 
-def fetch_batch(client_id: str, target_climate: dict, seen: set, n: int, max_dist: float) -> tuple[list, str]:
+def _harvest(client_id: str, tracks: list, target_climate: dict, seen: set,
+             existing_jids: set, added: list, per_artist: dict, n: int, max_dist: float):
+    """Filtra una página de resultados y descarga lo que sirve. Muta added/seen."""
+    for track in tracks:
+        if len(added) >= n:
+            return
+        tid = str(track.get("id") or "")
+        if not tid or tid in existing_jids:
+            continue
+        lic = license_short(track.get("license_ccurl"))
+        if not lic or lic not in EMIT_LICENSES:
+            continue
+        if not track.get("audiodownload_allowed"):
+            continue
+        artist = _clean((track.get("artist_name") or "desconocido").strip())
+        # Un mismo artista publica bloques de 20+ tracks en Jamendo; sin este
+        # tope un solo tag se queda con medio lote y la radio suena a un
+        # artista repetido durante días.
+        if per_artist.get(artist, 0) >= MAX_TRACKS_PER_ARTIST:
+            continue
+        song_climate = {
+            key: value
+            for key, value in climate_from_track(track).items()
+            if value is not None
+        }
+        dist = climate_distance(song_climate, target_climate) if target_climate else 0.5
+        if target_climate and dist > max_dist:
+            continue
+        rel = download_mp3(client_id, track)
+        if rel is None:
+            continue
+        album = _clean((track.get("album_name") or "single").strip()) or "single"
+        title = _clean((track.get("name") or "").strip()) or f"track-{tid}"
+        entry = {
+            "id": f"jm-{tid}",
+            "jamendo_id": tid,
+            "file": str(rel),
+            "title": title,
+            "artist": artist,
+            "album": album,
+            "duration_seconds": track.get("duration"),
+            "license": lic,
+            "source": "jamendo",
+            "climate": song_climate,
+            "climate_dist": round(dist, 3),
+            "releasedate": track.get("releasedate"),
+            "attribution": {
+                "creator": artist,
+                "license_url": track.get("license_ccurl"),
+                "track_url": track.get("shareurl"),
+            },
+        }
+        added.append(entry)
+        existing_jids.add(tid)
+        seen.add(tid)
+        per_artist[artist] = per_artist.get(artist, 0) + 1
+        log(f"  + [{lic}] {artist} — {title}  dist={dist:.2f}")
+
+
+def _sweep(client_id: str, target_climate: dict, seen: set, existing_jids: set,
+           added: list, per_artist: dict, n: int, max_dist: float, page_size: int,
+           tag: str | None, order: str, offset: int) -> tuple[int, str]:
+    """Recorre una consulta (tag + orden) desde offset y devuelve el siguiente.
+
+    Motivo devuelto: "ok" ventana leída, "empty" sin material, "network_error".
+    Una página vacía no corta el barrido: la API devuelve 200 con cuerpo vacío
+    cuando limita el ritmo, así que recién dos vacías seguidas se toman por
+    ventana agotada.
+    """
+    consecutive_empty = 0
+    for _ in range(SOURCE_MAX_PAGES):
+        if len(added) >= n:
+            break
+        params = {"limit": page_size, "offset": offset, "order": order}
+        if tag:
+            params["fuzzytags"] = tag
+        doc = api_get(client_id, params)
+        if not doc.get("ok"):
+            return offset, "network_error"
+        tracks = doc.get("results") or []
+        if not tracks:
+            consecutive_empty += 1
+            if consecutive_empty >= 2:
+                return offset, "empty"
+            continue
+        consecutive_empty = 0
+        _harvest(client_id, tracks, target_climate, seen, existing_jids, added, per_artist, n, max_dist)
+        if len(tracks) < page_size:
+            return 0, "empty"
+        offset += len(tracks)
+    return offset, "ok"
+
+
+def fetch_batch(client_id: str, target_climate: dict, seen: set, state: dict,
+                n: int, max_dist: float) -> tuple[list, str]:
     existing_jids = {
         str(song.get("jamendo_id"))
         for song in load_songs()
@@ -839,84 +971,62 @@ def fetch_batch(client_id: str, target_climate: dict, seen: set, n: int, max_dis
     }
     existing_jids.update(str(value) for value in seen)
     page_size = min(200, max(n * 4, 50))
-    strategies = ["relevance", "releasedate_desc", "popularity_total"]
     added = []
+    per_artist: dict = {}
     network_error = False
     received_response = False
 
-    for order in strategies:
-        offset = 0
-        for _ in range(3):
-            doc = api_get(client_id, {
-                "limit": page_size,
-                "offset": offset,
-                "order": order,
-            })
-            if not doc.get("ok"):
-                network_error = True
-                break
-            received_response = True
-            tracks = doc.get("results") or []
-            if not tracks:
-                break
-            for track in tracks:
-                if len(added) >= n:
-                    return added, "ok"
-                tid = str(track.get("id") or "")
-                if not tid or tid in existing_jids:
-                    continue
-                lic = license_short(track.get("license_ccurl"))
-                if not lic or lic not in EMIT_LICENSES:
-                    continue
-                if not track.get("audiodownload_allowed"):
-                    continue
-                song_climate = {
-                    key: value
-                    for key, value in climate_from_track(track).items()
-                    if value is not None
-                }
-                dist = climate_distance(song_climate, target_climate) if target_climate else 0.5
-                if target_climate and dist > max_dist:
-                    continue
-                rel = download_mp3(client_id, track)
-                if rel is None:
-                    continue
-                artist = _clean((track.get("artist_name") or "desconocido").strip())
-                album = _clean((track.get("album_name") or "single").strip()) or "single"
-                title = _clean((track.get("name") or "").strip()) or f"track-{tid}"
-                entry = {
-                    "id": f"jm-{tid}",
-                    "jamendo_id": tid,
-                    "file": str(rel),
-                    "title": title,
-                    "artist": artist,
-                    "album": album,
-                    "duration_seconds": track.get("duration"),
-                    "license": lic,
-                    "source": "jamendo",
-                    "climate": song_climate,
-                    "climate_dist": round(dist, 3),
-                    "releasedate": track.get("releasedate"),
-                    "attribution": {
-                        "creator": artist,
-                        "license_url": track.get("license_ccurl"),
-                        "track_url": track.get("shareurl"),
-                    },
-                }
-                added.append(entry)
-                existing_jids.add(tid)
-                seen.add(tid)
-                log(f"  + [{lic}] {artist} — {title}  dist={dist:.2f}")
-            if len(tracks) < page_size:
-                break
-            offset += len(tracks)
-        if len(added) >= n:
-            return added, "ok"
-        if network_error:
-            break
+    src = state.setdefault("source", {})
+    offsets = src.setdefault("offsets", {})
+    # Cada tag de clima abre su propia ventana de resultados, así que el estilo
+    # objetivo también multiplica el material alcanzable.
+    tags = [str(t) for t in (target_climate.get("genero") or [])] if target_climate else []
+    start = int(src.get("tag_index", 0) or 0) % max(1, len(tags))
+    tried: list[str] = []
+    reasons: dict[str, int] = {}
 
+    def run(tag, order):
+        nonlocal network_error, received_response
+        key = f"{tag or '-'}|{order}"
+        offset = int(offsets.get(key, 0) or 0)
+        offset, reason = _sweep(client_id, target_climate, seen, existing_jids,
+                                added, per_artist, n, max_dist, page_size, tag,
+                                order, offset)
+        offsets[key] = offset
+        reasons[reason] = reasons.get(reason, 0) + 1
+        if reason == "network_error":
+            network_error = True
+        else:
+            received_response = True
+        return reason
+
+    if tags:
+        for step in range(min(SOURCE_MAX_TAGS, len(tags))):
+            tag = tags[(start + step) % len(tags)]
+            tried.append(tag)
+            for order in SOURCE_ORDERS:
+                if len(added) >= n:
+                    break
+                run(tag, order)
+            if len(added) >= n or network_error:
+                break
+        src["tag_index"] = (start + len(tried)) % len(tags)
+    # Sin material por estilo objetivo se cae a la búsqueda abierta, para que la
+    # radio nunca quede muda aunque el catálogo de un estilo esté agotado.
+    if not added and not network_error:
+        for order in SOURCE_ORDERS:
+            if len(added) >= n:
+                break
+            run(None, order)
+        tried.append("sin filtro de estilo")
+
+    if tried:
+        log(f"gestor: consulta con {', '.join(tried)}; motivos={reasons or '{}'}; "
+            f"candidatos nuevos acumulados={len(added)}/{n}")
     if network_error and not received_response:
         return added, "network_error"
+    if len(added) >= n:
+        return added, "ok"
     return added, "exhausted"
 
 
@@ -1123,7 +1233,7 @@ def main():
             new_songs = []
         else:
             log(f"gestor: cola baja ({len(unplayed)} ≤ {args.low_watermark}). Descargando lote de {args.batch_size}...")
-            new_songs, _ = fetch_batch(client_id, target_climate, seen, args.batch_size, args.max_dist)
+            new_songs, _ = fetch_batch(client_id, target_climate, seen, state, args.batch_size, args.max_dist)
         log(f"gestor: {len(new_songs)} canciones nuevas descargadas")
 
         if new_songs:

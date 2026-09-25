@@ -12,6 +12,8 @@ if [ -f "$LOG_DIR/played.txt" ]; then
     mv "$LOG_DIR/played.txt.tmp" "$LOG_DIR/played.txt"
 fi
 
+./venv/bin/python scripts/gestor.py --cleanup-history
+
 # Rotar logs grandes: liquidsoap.out, select.log, web.out, catalog.log
 for f in liquidsoap.out select.log web.out catalog.log; do
     path="$LOG_DIR/$f"

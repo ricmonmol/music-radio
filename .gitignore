@@ -1,6 +1,8 @@
 music/
+archive/
 songs.json
 queue.m3u
+queue.offline.m3u
 logs/
 data/
 venv/

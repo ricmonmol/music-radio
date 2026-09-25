@@ -30,6 +30,8 @@ _stop() {
     pkill -x liquidsoap 2>/dev/null || true
     # Web server
     pkill -f web_server.py 2>/dev/null || true
+    # Gestor (descarga en curso)
+    pkill -f "scripts/gestor.py" 2>/dev/null || true
     sleep 0.5
 }
 
@@ -43,27 +45,30 @@ _start() {
         sleep 1
     fi
 
-    # Cola inicial si está vacía
-    if ! grep -q "\.mp3" queue.m3u 2>/dev/null; then
-        echo "→ Generando cola inicial..."
-        $PYTHON scripts/gestor.py --force >> logs/gestor.log 2>&1 || true
+    [ -f .env ] && { set -a; . ./.env; set +a; } || true
+    mkdir -p logs data
+
+    if [ ! -f queue.m3u ] || [ ! -s queue.m3u ]; then
+        printf '#EXTM3U\n' > queue.m3u
+    fi
+    if [ ! -f queue.offline.m3u ] || [ ! -s queue.offline.m3u ]; then
+        printf '#EXTM3U\n' > queue.offline.m3u
     fi
 
-    # Cargar credenciales (.env) antes de arrancar liquidsoap
-    [ -f .env ] && { set -a; . ./.env; set +a; } || true
-
-    # Liquidsoap
     echo "→ Arrancando liquidsoap..."
-    mkdir -p logs
     liquidsoap radio.liq >> logs/liquidsoap.out 2>&1 < /dev/null &
     echo "$!" > "$PIDFILE"
     echo "  liquidsoap PID $!"
 
-    # Web server
     echo "→ Arrancando web server..."
     setsid nohup $PYTHON scripts/web_server.py --host 0.0.0.0 \
         >> logs/web.out 2>&1 < /dev/null &
     echo "  web server PID $!"
+
+    # La renovación de colas sigue en segundo plano: el stream ya está en vivo
+    # y la playlist se recarga sola cuando el gestor termina de escribir.
+    echo "→ Renovando colas en segundo plano..."
+    setsid nohup $PYTHON scripts/gestor.py >> logs/gestor.log 2>&1 < /dev/null &
 
     # Verificación
     sleep 4

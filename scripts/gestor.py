@@ -1,21 +1,18 @@
 #!/usr/bin/env python3
 """gestor.py — ciclo de vida de la radio musical.
 
-Flujo (simple):
+Flujo:
   1. Lee clima.json  →  qué música buscar
-  2. Marca como escuchadas (`heard`) las canciones que aparecen en played.txt
-     (referencia permanente: una escuchada nunca vuelve a la cola)
-  3. Si quedan pocas sin reproducir (≤ LOW_WATERMARK):
-       a. Descarga un lote de Jamendo filtrado por climate_distance
-       b. Descarta las escuchadas: las saca del catálogo y borra sus mp3s
-       c. Actualiza songs.json y jamendo_seen.json
-  4. Recién ahí escribe queue.m3u, y solo si el contenido cambió
-     (hook ML: reemplazá climate_distance() con un modelo cuando esté listo)
+  2. Consume played.txt/played.tsv y marca las canciones al inicio
+  3. Si quedan pocas sin reproducir (≤ LOW_WATERMARK), descarga un lote de Jamendo
+  4. Conserva las pistas escuchadas en archive/music/ para el fallback offline
+  5. Escribe queue.m3u y queue.offline.m3u solo cuando cambia el contenido
 
 Fuentes de verdad:
-  • songs.json         — catálogo de mp3s en disco (campo `heard` = escuchadas)
-  • jamendo_seen.json  — IDs vistos alguna vez (nunca se vuelven a bajar)
-  • played.txt         — registro crudo de lo que sonó (lo mantiene el panel web)
+  • songs.json         — catálogo de mp3s y flags de reproducción
+  • data/playback.json — timestamps y conteos durables
+  • data/jamendo_seen.json — IDs vistos alguna vez (nunca se vuelven a bajar)
+  • logs/played.txt    — historial legible del panel web
 
 Uso:
   python scripts/gestor.py              # chequea y actúa si hace falta
@@ -28,6 +25,7 @@ import html
 import json
 import os
 import re
+import shutil
 import sys
 import time
 import urllib.parse
@@ -39,19 +37,26 @@ from pathlib import Path
 ROOT         = Path(__file__).resolve().parent.parent
 SONGS_PATH   = ROOT / "songs.json"
 QUEUE_PATH   = ROOT / "queue.m3u"
+OFFLINE_QUEUE_PATH = ROOT / "queue.offline.m3u"
 CLIMA_PATH   = ROOT / "clima.json"
 SEEN_PATH    = ROOT / "data" / "jamendo_seen.json"
+STATE_PATH   = ROOT / "data" / "playback.json"
 PLAYED_PATH  = ROOT / "logs" / "played.txt"
+PLAYED_TS_PATH = ROOT / "logs" / "played.tsv"
 NOWPLAYING   = ROOT / "logs" / "nowplaying.txt"
 MUSIC_DIR    = ROOT / "music"
+ARCHIVE_DIR  = ROOT / "archive" / "music"
 LOG_PATH     = ROOT / "logs" / "gestor.log"
 CLIENT_FILE  = ROOT / "scripts" / ".jamendo_client"
 
 # ── parámetros ────────────────────────────────────────────────────────────────
-LOW_WATERMARK  = 6    # si quedan ≤ N sin reproducir → descargar más
-BATCH_SIZE     = 25   # canciones a descargar por lote
-MAX_DIST       = 0.55 # distancia de clima máxima aceptable (0=exacto, 1=opuesto)
-MAX_CATALOG    = 80   # mp3s máximos en disco al mismo tiempo
+LOW_WATERMARK  = 6
+BATCH_SIZE     = 25
+MAX_DIST       = 0.55
+OFFLINE_QUEUE_SIZE = 200
+PROTECTED_QUEUE_ITEMS = 2
+HISTORY_RETENTION_DAYS = 7
+NOWPLAYING_MAX_AGE = 900
 
 # ── constantes Jamendo ────────────────────────────────────────────────────────
 EMIT_LICENSES = {"cc0", "public-domain", "cc-by", "cc-by-sa", "cc-by-nc", "permission"}
@@ -140,21 +145,168 @@ def load_json(path, default):
 def save_json(path, data):
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    tmp = p.with_name(p.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, p)
 
 
 def write_in_place(path, text):
-    """Escribe truncando el MISMO inode (sin os.replace).
-
-    Es clave para liquidsoap: con reload_mode="watch" mira el inode original;
-    si reemplazamos el archivo por otro inode (os.replace), deja de notar
-    los cambios y la radio queda clavada en la cola vieja.
-    """
-    with open(path, "w", encoding="utf-8") as fh:
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "w", encoding="utf-8") as fh:
         fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def playlist_entries(text):
+    return [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+
+def playlist_needs_update(path, text):
+    try:
+        current = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return True
+    return playlist_entries(current) != playlist_entries(text)
+
+
+def write_playlist(path, text):
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    payload = text.encode("utf-8")
+    try:
+        old_size = p.stat().st_size
+    except OSError:
+        old_size = 0
+    if old_size > len(payload):
+        padding_size = old_size - len(payload)
+        if padding_size == 1:
+            padding = b"#"
+        elif padding_size == 2:
+            padding = b"#\n"
+        else:
+            padding = b"# " + b" " * (padding_size - 3) + b"\n"
+    else:
+        padding = b""
+    data = payload + padding
+    fd = os.open(p, os.O_WRONLY | os.O_CREAT, 0o644)
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        view = memoryview(data)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise OSError("no se pudo escribir la playlist")
+            view = view[written:]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def now_iso() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def path_from_value(value) -> Path:
+    raw = str(value or "")
+    parsed = urllib.parse.urlparse(raw)
+    if parsed.scheme == "file":
+        raw = urllib.parse.unquote(parsed.path)
+    elif parsed.scheme in {"http", "https"}:
+        raw = parsed.path
+    p = Path(raw)
+    return p if p.is_absolute() else ROOT / p
+
+
+def path_string(path) -> str:
+    p = Path(path)
+    try:
+        return str(p.resolve().relative_to(ROOT.resolve()))
+    except ValueError:
+        return str(p)
+
+
+def path_identity(value) -> str:
+    try:
+        return str(path_from_value(value).resolve())
+    except OSError:
+        return str(path_from_value(value))
+
+
+def track_key(value) -> str:
+    if isinstance(value, dict):
+        jamendo_id = str(value.get("jamendo_id") or "")
+        if jamendo_id:
+            return f"jamendo:{jamendo_id}"
+        value = value.get("file", "")
+    name = path_from_value(value).name
+    match = re.search(r" - (\d+)$", Path(name).stem)
+    if match:
+        return f"jamendo:{match.group(1)}"
+    return f"file:{name}"
+
+
+def state_default() -> dict:
+    return {"version": 1, "mode": "online", "tracks": {}}
+
+
+def load_state() -> dict:
+    data = load_json(STATE_PATH, state_default())
+    if not isinstance(data, dict):
+        return state_default()
+    data.setdefault("version", 1)
+    data.setdefault("mode", "online")
+    data.setdefault("tracks", {})
+    if not isinstance(data["tracks"], dict):
+        data["tracks"] = {}
+    return data
+
+
+def save_state(state: dict):
+    save_json(STATE_PATH, state)
+
+
+def file_mtime(path) -> str:
+    try:
+        return datetime.fromtimestamp(Path(path).stat().st_mtime).astimezone().isoformat(timespec="seconds")
+    except OSError:
+        return "1970-01-01T00:00:00+00:00"
+
+
+def parse_time(value) -> float:
+    if not value:
+        return 0.0
+    try:
+        return datetime.fromisoformat(str(value)).timestamp()
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def queue_paths(path) -> list[str]:
+    p = Path(path)
+    if not p.exists():
+        return []
+    result = []
+    for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+        value = line.strip()
+        if value and not value.startswith("#"):
+            result.append(path_identity(value))
+    return result
+
+
+def append_played_event(path: str):
+    p = Path(PLAYED_TS_PATH)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "a", encoding="utf-8") as fh:
+        fh.write(f"{now_iso()}|{path}\n")
 
 
 # ── clima ─────────────────────────────────────────────────────────────────────
@@ -265,17 +417,20 @@ def api_get(client_id: str, params: dict) -> dict:
     q = {"client_id": client_id, "format": "json", "include": "musicinfo"}
     q.update(params)
     url = JAMENDO_API + "?" + urllib.parse.urlencode(q)
-    for _ in range(3):
+    for attempt in range(3):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-            with urllib.request.urlopen(req, timeout=60) as r:
-                doc = json.loads(r.read().decode("utf-8"))
-            if doc.get("results"):
-                return doc
-        except OSError:
-            pass
-        time.sleep(1.0)
-    return {"headers": {"status": "failed"}, "results": []}
+            with urllib.request.urlopen(req, timeout=30) as response:
+                doc = json.loads(response.read().decode("utf-8"))
+            return {
+                "ok": True,
+                "results": doc.get("results") or [],
+                "headers": doc.get("headers") or {},
+            }
+        except (OSError, ValueError):
+            if attempt < 2:
+                time.sleep(1.0)
+    return {"ok": False, "network_error": True, "results": [], "headers": {}}
 
 
 def license_short(curl: str | None) -> str | None:
@@ -335,7 +490,8 @@ def download_mp3(client_id: str, t: dict) -> Path | None:
 # ── catálogo ──────────────────────────────────────────────────────────────────
 
 def load_songs() -> list:
-    return load_json(SONGS_PATH, [])
+    data = load_json(SONGS_PATH, [])
+    return data if isinstance(data, list) else []
 
 
 def save_songs(songs: list):
@@ -344,7 +500,9 @@ def save_songs(songs: list):
 
 def load_seen() -> set:
     data = load_json(SEEN_PATH, [])
-    return set(data) if isinstance(data, list) else set()
+    if not isinstance(data, list):
+        return set()
+    return {str(value) for value in data if str(value)}
 
 
 def save_seen(seen: set):
@@ -353,72 +511,22 @@ def save_seen(seen: set):
 
 # ── historial de reproducción ─────────────────────────────────────────────────
 
-def acquire_lock() -> object | None:
-    """Lock de instancia única: evita dos gestores corriendo a la vez."""
+def acquire_lock(wait: bool = False) -> object | None:
     data = SEEN_PATH.parent
     data.mkdir(parents=True, exist_ok=True)
     fh = open(data / "gestor.lock", "w", encoding="utf-8")
+    flags = fcntl.LOCK_EX
+    if not wait:
+        flags |= fcntl.LOCK_NB
     try:
-        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fh, flags)
         return fh
     except OSError:
+        fh.close()
         return None
 
 
-def consume_played(songs: list) -> int:
-    """Marca como `heard` las canciones que aparecen en played.txt (o sin archivo).
-
-    Es la referencia permanente de lo escuchado: una canción marcada `heard`
-    nunca vuelve a entrar en la cola ni se vuelve a bajar (jamendo_seen).
-    No borra played.txt: ese archivo lo mantiene el historial del panel web y
-    cleanup_logs.sh controla su tamaño. Devuelve cuántas marcó nuevas.
-    """
-    p = Path(PLAYED_PATH)
-    if not p.exists() or p.stat().st_size == 0:
-        return 0
-    played = set()
-    for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
-        raw = line.strip()
-        if raw:
-            played.add(raw.split("|", 1)[0].strip())
-    marked, changed = 0, False
-    for s in songs:
-        heard = bool(s.get("heard")) \
-            or str((ROOT / s["file"]).resolve()) in played \
-            or not (ROOT / s["file"]).exists()
-        if heard and not s.get("heard"):
-            s["heard"] = True
-            marked += 1
-            changed = True
-    if changed:
-        save_songs(songs)
-    return marked
-
-
-def sweep_orphans(songs: list, protect_path: str | None):
-    """Borra mp3s en music/ que ya no están en el catálogo ni suenan ahora."""
-    keep = {str((ROOT / s["file"]).resolve()) for s in songs}
-    removed = 0
-    for p in MUSIC_DIR.rglob("*.mp3"):
-        if str(p.resolve()) in keep or str(p.resolve()) == protect_path:
-            continue
-        try:
-            p.unlink()
-            removed += 1
-        except OSError:
-            pass
-    for d in sorted(MUSIC_DIR.rglob("*"), reverse=True):
-        if d.is_dir():
-            try:
-                d.rmdir()
-            except OSError:
-                pass
-    if removed:
-        log(f"cleanup: {removed} mp3s huérfanos eliminados")
-
-
 def get_nowplaying_path() -> str | None:
-    """Ruta absoluta del mp3 que está sonando ahora mismo."""
     p = Path(NOWPLAYING)
     if not p.exists():
         return None
@@ -428,285 +536,627 @@ def get_nowplaying_path() -> str | None:
     return None
 
 
+def nowplaying_is_current() -> bool:
+    try:
+        age = time.time() - Path(NOWPLAYING).stat().st_mtime
+    except OSError:
+        return False
+    return age <= NOWPLAYING_MAX_AGE
+
+
+def song_file(song: dict) -> Path:
+    return path_from_value(song.get("file", ""))
+
+
+def metadata_from_path(path) -> dict:
+    p = Path(path)
+    try:
+        rel = p.relative_to(ROOT)
+        parts = rel.parts
+    except ValueError:
+        parts = p.parts
+    stem = p.stem
+    match = re.search(r" - (\d+)$", stem)
+    jamendo_id = match.group(1) if match else None
+    title = stem[:match.start()].strip() if match else stem
+    artist = "desconocido"
+    album = "single"
+    if parts[:2] == ("archive", "music") and len(parts) >= 5:
+        artist = parts[2]
+        album = parts[3]
+    elif parts[:1] == ("music",) and len(parts) >= 3:
+        artist = parts[1]
+        album = parts[2]
+    return {
+        "id": f"jm-{jamendo_id}" if jamendo_id else track_key(p),
+        "jamendo_id": jamendo_id,
+        "file": path_string(p),
+        "title": title or "desconocido",
+        "artist": artist or "desconocido",
+        "album": album or "single",
+        "source": "jamendo" if jamendo_id else "local",
+        "heard": True,
+        "archived": parts[:2] == ("archive", "music"),
+        "last_played_at": file_mtime(p),
+    }
+
+
+def find_song(songs: list, value) -> dict | None:
+    target_path = path_identity(value)
+    target_key = track_key(value)
+    for song in songs:
+        if path_identity(song.get("file", "")) == target_path:
+            return song
+    for song in songs:
+        if track_key(song) == target_key:
+            return song
+    return None
+
+
+def update_song_state(song: dict, state: dict, timestamp: str) -> bool:
+    key = track_key(song)
+    record = state["tracks"].setdefault(key, {})
+    record["file"] = path_string(song_file(song))
+    record["last_played"] = timestamp
+    record["play_count"] = int(record.get("play_count", 0)) + 1
+    song["last_played_at"] = timestamp
+    was_heard = bool(song.get("heard"))
+    song["heard"] = True
+    return not was_heard
+
+
+def ensure_state_records(songs: list, state: dict) -> bool:
+    changed = False
+    for song in songs:
+        if not song.get("heard"):
+            continue
+        key = track_key(song)
+        record = state["tracks"].setdefault(key, {})
+        if not record.get("last_played"):
+            record["last_played"] = song.get("last_played_at") or file_mtime(song_file(song))
+            changed = True
+        if not record.get("file"):
+            record["file"] = path_string(song_file(song))
+            changed = True
+        if not song.get("last_played_at"):
+            song["last_played_at"] = record["last_played"]
+            changed = True
+    return changed
+
+
+def adopt_archive(songs: list, state: dict) -> tuple[bool, set[str]]:
+    if not ARCHIVE_DIR.exists():
+        return False, set()
+    by_key = {track_key(song): song for song in songs}
+    changed = False
+    seen = set()
+    for path in sorted(ARCHIVE_DIR.rglob("*.mp3")):
+        key = track_key(path)
+        seen.add(key.removeprefix("jamendo:"))
+        song = by_key.get(key)
+        if song is None:
+            song = metadata_from_path(path)
+            songs.append(song)
+            by_key[key] = song
+            changed = True
+        elif not song.get("heard"):
+            song["heard"] = True
+            changed = True
+        if not song.get("file") or not song_file(song).exists():
+            song["file"] = path_string(path)
+            song["archived"] = True
+            changed = True
+        record = state["tracks"].setdefault(key, {})
+        if not record.get("last_played"):
+            record["last_played"] = song.get("last_played_at") or file_mtime(path)
+            record["file"] = song["file"]
+            changed = True
+    return changed, seen
+
+
+def consume_played(songs: list, state: dict) -> int:
+    values = []
+    timestamps = {}
+    tsv = Path(PLAYED_TS_PATH)
+    if tsv.exists():
+        for line in tsv.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not line.strip():
+                continue
+            raw_timestamp, separator, value = line.partition("|")
+            if not separator or not value.strip():
+                continue
+            value = value.strip()
+            values.append(value)
+            timestamps[path_identity(value)] = raw_timestamp.strip()
+
+    legacy = Path(PLAYED_PATH)
+    if legacy.exists():
+        values.extend(
+            line.split("|", 1)[0].strip()
+            for line in legacy.read_text(encoding="utf-8", errors="replace").splitlines()
+            if line.strip()
+        )
+
+    current = get_nowplaying_path()
+    if current:
+        values.append(current)
+
+    marked = 0
+    seen_values = set()
+    current_identity = path_identity(current) if current and nowplaying_is_current() else None
+    for value in values:
+        identity = path_identity(value)
+        if identity in seen_values:
+            continue
+        seen_values.add(identity)
+        song = find_song(songs, value)
+        if song is None:
+            continue
+        key = track_key(song)
+        record = state["tracks"].setdefault(key, {})
+        is_current = identity == current_identity
+        timestamp = now_iso() if is_current else timestamps.get(identity)
+        if not timestamp:
+            timestamp = song.get("last_played_at") or file_mtime(song_file(song))
+        if song.get("heard") and record.get("last_played") and not is_current:
+            if parse_time(timestamp) <= parse_time(record["last_played"]):
+                continue
+        if not song.get("heard"):
+            marked += 1
+        update_song_state(song, state, timestamp)
+    return marked
+
+
+def mark_started(value: str) -> int:
+    lock = acquire_lock()
+    if lock is None:
+        return 0
+    try:
+        songs = load_songs()
+        state = load_state()
+        ensure_state_records(songs, state)
+        song = find_song(songs, value)
+        if song is None and path_from_value(value).exists():
+            song = metadata_from_path(path_from_value(value))
+            songs.append(song)
+        if song is not None:
+            update_song_state(song, state, now_iso())
+            save_songs(songs)
+        save_state(state)
+        append_played_event(value)
+        if state.get("mode") == "offline":
+            write_offline_queue(songs, state, protected_paths(value))
+        return 0
+    finally:
+        lock.close()
+
+
+def archive_path_for(path: Path) -> Path:
+    try:
+        relative = path.resolve().relative_to(MUSIC_DIR.resolve())
+    except ValueError:
+        return ARCHIVE_DIR / path.name
+    return ARCHIVE_DIR / relative
+
+
+def archive_songs(songs: list, state: dict, protect_paths: set[str]) -> tuple[list, int]:
+    result = []
+    archived = 0
+    for song in songs:
+        source = song_file(song)
+        identity = path_identity(source)
+        try:
+            source.resolve().relative_to(ARCHIVE_DIR.resolve())
+            song["archived"] = True
+            result.append(song)
+            continue
+        except ValueError:
+            pass
+        if not song.get("heard") or not source.exists() or identity in protect_paths:
+            result.append(song)
+            continue
+        destination = archive_path_for(source)
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists():
+                source.unlink()
+            else:
+                shutil.move(str(source), str(destination))
+            song["file"] = path_string(destination)
+            song["archived"] = True
+            record = state["tracks"].setdefault(track_key(song), {})
+            record["file"] = song["file"]
+            record["archived"] = True
+            archived += 1
+        except OSError as exc:
+            log(f"  ! no se pudo archivar {source}: {exc}")
+            result.append(song)
+            continue
+        result.append(song)
+    return result, archived
+
+
+def archive_orphans(songs: list, state: dict, protect_paths: set[str]) -> tuple[int, set[str]]:
+    known = {path_identity(song.get("file", "")) for song in songs}
+    archived = 0
+    archived_ids = set()
+    if not MUSIC_DIR.exists():
+        return 0, archived_ids
+    for path in sorted(MUSIC_DIR.rglob("*.mp3")):
+        identity = path_identity(path)
+        if identity in known or identity in protect_paths:
+            continue
+        destination = archive_path_for(path)
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists():
+                path.unlink()
+            else:
+                shutil.move(str(path), str(destination))
+            song = metadata_from_path(destination)
+            songs.append(song)
+            state["tracks"].setdefault(track_key(song), {
+                "file": song["file"],
+                "last_played": file_mtime(destination),
+                "play_count": 0,
+            })
+            key = track_key(song)
+            if key.startswith("jamendo:"):
+                archived_ids.add(key.removeprefix("jamendo:"))
+            archived += 1
+        except OSError:
+            pass
+    return archived, archived_ids
+
+
+def cleanup_playback_events() -> int:
+    p = Path(PLAYED_TS_PATH)
+    if not p.exists():
+        return 0
+    cutoff = datetime.now().astimezone().timestamp() - HISTORY_RETENTION_DAYS * 86400
+    kept = []
+    for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+        raw = line.split("|", 1)[0].strip()
+        try:
+            if datetime.fromisoformat(raw).timestamp() >= cutoff:
+                kept.append(line)
+        except ValueError:
+            continue
+    text = "\n".join(kept)
+    if text:
+        text += "\n"
+    write_in_place(p, text)
+    return len(kept)
+
+
 # ── descarga de Jamendo ───────────────────────────────────────────────────────
 
-def fetch_batch(client_id: str, target_climate: dict, seen: set, n: int) -> list:
-    """Descarga hasta n canciones que encajen con el clima objetivo.
+def fetch_batch(client_id: str, target_climate: dict, seen: set, n: int, max_dist: float) -> tuple[list, str]:
+    existing_jids = {
+        str(song.get("jamendo_id"))
+        for song in load_songs()
+        if song.get("jamendo_id")
+    }
+    existing_jids.update(str(value) for value in seen)
+    page_size = min(200, max(n * 4, 50))
+    strategies = ["relevance", "releasedate_desc", "popularity_total"]
+    added = []
+    network_error = False
+    received_response = False
 
-    Retorna lista de entradas nuevas listas para agregar a songs.json.
-    """
-    existing_jids = {s.get("jamendo_id") for s in load_songs() if s.get("jamendo_id")}
-    PAGE    = min(200, max(n * 4, 50))
-    added   = []
-    offset  = 0
-    max_api = n * 10  # intentos máximos en la API
-
-    while len(added) < n and offset < max_api:
-        doc    = api_get(client_id, {"limit": PAGE, "offset": offset, "order": "relevance"})
-        tracks = doc.get("results") or []
-        if not tracks:
-            break
-
-        for t in tracks:
-            if len(added) >= n:
+    for order in strategies:
+        offset = 0
+        for _ in range(3):
+            doc = api_get(client_id, {
+                "limit": page_size,
+                "offset": offset,
+                "order": order,
+            })
+            if not doc.get("ok"):
+                network_error = True
                 break
-            tid = str(t.get("id"))
-            if tid in existing_jids or tid in seen:
-                continue
-            lic = license_short(t.get("license_ccurl"))
-            if not lic or lic not in EMIT_LICENSES:
-                continue
-            if not t.get("audiodownload_allowed"):
-                continue
-
-            # ── filtro de clima (ML hook) ──────────────────────────────────
-            song_climate = {k: v for k, v in climate_from_track(t).items() if v is not None}
-            dist = climate_distance(song_climate, target_climate) if target_climate else 0.5
-            if target_climate and dist > MAX_DIST:
-                continue
-
-            rel = download_mp3(client_id, t)
-            if rel is None:
-                continue
-
-            artist = _clean((t.get("artist_name") or "desconocido").strip())
-            album  = _clean((t.get("album_name")  or "single").strip()) or "single"
-            title  = _clean((t.get("name")         or "").strip()) or f"track-{tid}"
-
-            entry = {
-                "id":               f"jm-{tid}",
-                "jamendo_id":       tid,
-                "file":             str(rel),
-                "title":            title,
-                "artist":           artist,
-                "album":            album,
-                "duration_seconds": t.get("duration"),
-                "license":          lic,
-                "source":           "jamendo",
-                "climate":          song_climate,
-                "climate_dist":     round(dist, 3),
-                "releasedate":      t.get("releasedate"),
-                "attribution": {
-                    "creator":     artist,
-                    "license_url": t.get("license_ccurl"),
-                    "track_url":   t.get("shareurl"),
-                },
-            }
-            added.append(entry)
-            existing_jids.add(tid)
-            seen.add(tid)
-            log(f"  + [{lic}] {artist} — {title}  dist={dist:.2f}")
-
-        if len(tracks) < PAGE:
+            received_response = True
+            tracks = doc.get("results") or []
+            if not tracks:
+                break
+            for track in tracks:
+                if len(added) >= n:
+                    return added, "ok"
+                tid = str(track.get("id") or "")
+                if not tid or tid in existing_jids:
+                    continue
+                lic = license_short(track.get("license_ccurl"))
+                if not lic or lic not in EMIT_LICENSES:
+                    continue
+                if not track.get("audiodownload_allowed"):
+                    continue
+                song_climate = {
+                    key: value
+                    for key, value in climate_from_track(track).items()
+                    if value is not None
+                }
+                dist = climate_distance(song_climate, target_climate) if target_climate else 0.5
+                if target_climate and dist > max_dist:
+                    continue
+                rel = download_mp3(client_id, track)
+                if rel is None:
+                    continue
+                artist = _clean((track.get("artist_name") or "desconocido").strip())
+                album = _clean((track.get("album_name") or "single").strip()) or "single"
+                title = _clean((track.get("name") or "").strip()) or f"track-{tid}"
+                entry = {
+                    "id": f"jm-{tid}",
+                    "jamendo_id": tid,
+                    "file": str(rel),
+                    "title": title,
+                    "artist": artist,
+                    "album": album,
+                    "duration_seconds": track.get("duration"),
+                    "license": lic,
+                    "source": "jamendo",
+                    "climate": song_climate,
+                    "climate_dist": round(dist, 3),
+                    "releasedate": track.get("releasedate"),
+                    "attribution": {
+                        "creator": artist,
+                        "license_url": track.get("license_ccurl"),
+                        "track_url": track.get("shareurl"),
+                    },
+                }
+                added.append(entry)
+                existing_jids.add(tid)
+                seen.add(tid)
+                log(f"  + [{lic}] {artist} — {title}  dist={dist:.2f}")
+            if len(tracks) < page_size:
+                break
+            offset += len(tracks)
+        if len(added) >= n:
+            return added, "ok"
+        if network_error:
             break
-        offset += len(tracks)
 
-    return added
+    if network_error and not received_response:
+        return added, "network_error"
+    return added, "exhausted"
 
 
 # ── cola ──────────────────────────────────────────────────────────────────────
 
-def write_queue(songs: list, target_climate: dict) -> tuple[int, bool]:
-    """Escribe queue.m3u: primero por distancia de clima, luego espaciado por artista.
+def render_queue(songs: list) -> str:
+    lines = ["#EXTM3U"]
+    for song in songs:
+        path = song_file(song).resolve()
+        artist = song.get("artist") or "desconocido"
+        title = song.get("title") or path.stem
+        lines.append(f"#EXTINF:,{artist} — {title}")
+        lines.append(str(path))
+    return "\n".join(lines) + "\n"
 
-    Solo pisa el archivo si el contenido cambió (así liquidsoap recarga solo
-    cuando hay novedades reales). Devuelve (n_canciones, hubo_cambio).
 
-    Orden = ML hook: reemplazá sort_key con un modelo de ranking cuando esté listo.
-    Firma esperada: score(song: dict, target: dict) -> float  (menor = antes en la cola)
-    """
-    MIN_ARTIST_GAP = 4  # mínimo de canciones entre dos del mismo artista
+def write_queue(songs: list, target_climate: dict, exclude_paths: set[str] | None = None) -> tuple[int, bool]:
+    exclude = exclude_paths or set()
+    pool = []
+    seen_keys = set()
+    for song in songs:
+        key = track_key(song)
+        path = song_file(song)
+        if key in seen_keys or song.get("heard") or song.get("archived"):
+            continue
+        if not path.exists() or path_identity(path) in exclude:
+            continue
+        seen_keys.add(key)
+        pool.append(song)
 
-    def sort_key(s):
-        dist = s.get("climate_dist")
+    def sort_key(song):
+        dist = song.get("climate_dist")
         if dist is None and target_climate:
-            dist = climate_distance(s.get("climate", {}), target_climate)
+            dist = climate_distance(song.get("climate", {}), target_climate)
         return dist if dist is not None else 0.5
 
-    # 1. Ordenar por proximidad al clima (mejor primero)
-    pool = sorted(
-        [s for s in songs if (ROOT / s["file"]).exists()],
-        key=sort_key,
-    )
-
-    # 2. Intercalar para espaciar artistas — algoritmo greedy:
-    #    en cada posición elegimos la mejor canción cuyo artista
-    #    no haya aparecido en las últimas MIN_ARTIST_GAP posiciones.
-    #    Si no queda ninguna que cumpla, se relaja el constraint.
-    ordered     = []
-    recent_artists: list[str] = []
-
+    pool.sort(key=sort_key)
+    ordered = []
+    recent_artists = []
     while pool:
-        chosen = None
-        window = recent_artists[-MIN_ARTIST_GAP:]
-        # Intentar respetar el gap
-        for i, s in enumerate(pool):
-            if s.get("artist") not in window:
-                chosen = pool.pop(i)
-                break
-        # No queda opción dentro del gap: tomar la mejor disponible
-        if chosen is None:
-            chosen = pool.pop(0)
-
+        window = set(recent_artists[-4:])
+        chosen_index = next(
+            (i for i, song in enumerate(pool) if song.get("artist") not in window),
+            0,
+        )
+        chosen = pool.pop(chosen_index)
         ordered.append(chosen)
         recent_artists.append(chosen.get("artist", ""))
 
-    lines = ["#EXTM3U"]
-    for s in ordered:
-        path = (ROOT / s["file"]).resolve()
-        lines.append(f"#EXTINF:,{s['artist']} — {s['title']}")
-        lines.append(str(path))
-    text = "\n".join(lines) + "\n"
-
-    changed = True
-    try:
-        if QUEUE_PATH.read_text(encoding="utf-8", errors="replace") == text:
-            changed = False
-    except OSError:
-        changed = True
+    text = render_queue(ordered)
+    changed = playlist_needs_update(QUEUE_PATH, text)
     if changed:
-        write_in_place(QUEUE_PATH, text)
+        write_playlist(QUEUE_PATH, text)
     return len(ordered), changed
 
 
-# ── limpieza de mp3s ──────────────────────────────────────────────────────────
+def offline_sort_key(song: dict, state: dict):
+    record = state["tracks"].get(track_key(song), {})
+    timestamp = record.get("last_played") or song.get("last_played_at")
+    if not timestamp:
+        timestamp = file_mtime(song_file(song))
+    return parse_time(timestamp), track_key(song)
 
-def delete_songs(songs_to_delete: list, protect_path: str | None):
-    """Borra los mp3s de las canciones indicadas (excepto la que suena ahora)."""
-    deleted = 0
-    for s in songs_to_delete:
-        p = (ROOT / s["file"]).resolve()
-        if str(p) == protect_path:
+
+def write_offline_queue(songs: list, state: dict, exclude_paths: set[str] | None = None) -> tuple[int, bool]:
+    exclude = {path_identity(value) for value in (exclude_paths or set())}
+    candidates = {}
+    for song in songs:
+        path = song_file(song)
+        if not song.get("heard") or not path.exists() or path_identity(path) in exclude:
             continue
-        if p.exists():
+        candidates[track_key(song)] = song
+
+    for key, record in state["tracks"].items():
+        if key in candidates or not record.get("file"):
+            continue
+        path = path_from_value(record["file"])
+        if not path.exists() or path_identity(path) in exclude:
+            continue
+        song = metadata_from_path(path)
+        song["last_played_at"] = record.get("last_played") or file_mtime(path)
+        candidates[key] = song
+
+    ordered = sorted(candidates.values(), key=lambda song: offline_sort_key(song, state))
+    ordered = ordered[:OFFLINE_QUEUE_SIZE]
+    text = render_queue(ordered)
+    changed = playlist_needs_update(OFFLINE_QUEUE_PATH, text)
+    if changed:
+        write_playlist(OFFLINE_QUEUE_PATH, text)
+    return len(ordered), changed
+
+
+def protected_paths(now_playing: str | None) -> set[str]:
+    protected = set()
+    if now_playing:
+        protected.add(path_identity(now_playing))
+    protected.update(queue_paths(QUEUE_PATH)[:PROTECTED_QUEUE_ITEMS])
+    return protected
+
+
+def remove_empty_music_dirs():
+    if not MUSIC_DIR.exists():
+        return
+    for directory in sorted(MUSIC_DIR.rglob("*"), reverse=True):
+        if directory.is_dir():
             try:
-                p.unlink()
-                deleted += 1
-            except OSError as e:
-                log(f"  ! no se pudo borrar {p}: {e}")
-    # limpiar carpetas vacías dentro de music/
-    for d in sorted(MUSIC_DIR.rglob("*"), reverse=True):
-        if d.is_dir():
-            try:
-                d.rmdir()
+                directory.rmdir()
             except OSError:
                 pass
-    if deleted:
-        log(f"cleanup: {deleted} mp3s eliminados")
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
     ap = argparse.ArgumentParser(description="Gestor de la radio musical")
-    ap.add_argument("--force",         action="store_true",
-                    help="descargar aunque quede cola suficiente")
-    ap.add_argument("--status",        action="store_true",
-                    help="mostrar estado y salir")
-    ap.add_argument("--batch-size",    type=int,   default=BATCH_SIZE,
-                    help=f"canciones a descargar por lote (default {BATCH_SIZE})")
-    ap.add_argument("--low-watermark", type=int,   default=LOW_WATERMARK,
-                    help=f"umbral de cola para disparar descarga (default {LOW_WATERMARK})")
-    ap.add_argument("--max-dist",      type=float, default=MAX_DIST,
-                    help=f"distancia de clima máxima (default {MAX_DIST})")
+    ap.add_argument("--force", action="store_true", help="descargar aunque quede cola suficiente")
+    ap.add_argument("--status", action="store_true", help="mostrar estado y salir")
+    ap.add_argument("--mark-played", metavar="PATH", help="marcar una pista como iniciada")
+    ap.add_argument("--cleanup-history", action="store_true", help="limpiar eventos temporales")
+    ap.add_argument("--batch-size", type=int, default=BATCH_SIZE, help=f"canciones a descargar por lote (default {BATCH_SIZE})")
+    ap.add_argument("--low-watermark", type=int, default=LOW_WATERMARK, help=f"umbral de cola para disparar descarga (default {LOW_WATERMARK})")
+    ap.add_argument("--max-dist", type=float, default=MAX_DIST, help=f"distancia de clima máxima (default {MAX_DIST})")
     args = ap.parse_args()
+
+    if args.mark_played:
+        return mark_started(args.mark_played)
+
+    if args.cleanup_history:
+        cleanup_lock = acquire_lock()
+        if cleanup_lock is None:
+            return 0
+        try:
+            cleanup_playback_events()
+        finally:
+            cleanup_lock.close()
+        return 0
+
+    if args.status:
+        songs = load_songs()
+        state = load_state()
+        seen = load_seen()
+        heard = [song for song in songs if song.get("heard")]
+        unplayed = [song for song in songs if not song.get("heard") and song_file(song).exists()]
+        missing = [song for song in songs if not song_file(song).exists()]
+        total_mb = sum(song_file(song).stat().st_size / 1e6 for song in songs if song_file(song).exists())
+        print(f"Canciones en catálogo : {len(songs)}")
+        print(f"  escuchadas          : {len(heard)}")
+        print(f"  sin reproducir      : {len(unplayed)}")
+        print(f"  sin archivo (drop)  : {len(missing)}")
+        print(f"Modo de reproducción  : {state.get('mode', 'online')}")
+        print(f"Cola online           : {len(queue_paths(QUEUE_PATH))}")
+        print(f"Cola offline          : {len(queue_paths(OFFLINE_QUEUE_PATH))}")
+        print(f"Espacio en disco      : {total_mb:.1f} MB")
+        print(f"Jamendo IDs vistos    : {len(seen)}")
+        print(f"Sonando ahora         : {get_nowplaying_path() or '(nada)'}")
+        return 0
 
     lock = acquire_lock()
     if lock is None:
         print("gestor: ya hay una instancia corriendo; saliendo.")
         return 0
 
-    target_climate = load_clima()
-    songs          = load_songs()
-    now_playing    = get_nowplaying_path()
-
-    # Registrar lo que sonó (referencia permanente: campo `heard` en songs.json)
-    marked = consume_played(songs)
-    if marked:
-        log(f"gestor: {marked} canciones marcadas como escuchadas")
-
-    def exists(song):
-        return (ROOT / song["file"]).exists()
-
-    # Canciones todavía sin reproducir y con mp3 en disco
-    unplayed = [s for s in songs if not s.get("heard") and exists(s)]
-
-    # ── status ────────────────────────────────────────────────────────────────
-    if args.status:
-        heard   = [s for s in songs if s.get("heard")]
-        missing = [s for s in songs if not exists(s)]
-        total_mb = sum(
-            (ROOT / s["file"]).stat().st_size / 1e6
-            for s in songs if exists(s)
-        )
+    try:
+        target_climate = load_clima()
+        songs = load_songs()
+        state = load_state()
         seen = load_seen()
-        print(f"Canciones en catálogo : {len(songs)}")
-        print(f"  escuchadas          : {len(heard)}")
-        print(f"  sin reproducir      : {len(unplayed)}")
-        print(f"  sin archivo (drop)  : {len(missing)}")
-        print(f"Espacio en disco      : {total_mb:.1f} MB")
-        print(f"Jamendo IDs vistos    : {len(seen)}")
-        print(f"Sonando ahora         : {now_playing or '(nada)'}")
-        print(f"Clima objetivo        : {target_climate}")
-        return 0
+        now_playing = get_nowplaying_path()
 
-    log(f"gestor: {len(unplayed)} sin reproducir de {len(songs)} en catálogo")
+        _, archive_seen = adopt_archive(songs, state)
+        seen.update(value for value in archive_seen if value.isdigit())
+        marked = consume_played(songs, state)
+        ensure_state_records(songs, state)
+        if marked:
+            log(f"gestor: {marked} canciones marcadas como escuchadas")
 
-    # ── ¿hace falta descargar? ────────────────────────────────────────────────
-    # Si la cola ya tiene canciones: no tocar nada (reescribir en cada track
-    # es lo que rompía el reload de liquidsoap).
-    queue_vacio = not QUEUE_PATH.exists() or QUEUE_PATH.stat().st_size == 0
-    if len(unplayed) > args.low_watermark and not args.force:
-        if queue_vacio:
-            n, _ = write_queue(unplayed, target_climate)
-            log(f"gestor: queue.m3u vacío, escrito con {n} canciones.")
+        protected = protected_paths(now_playing)
+        archived_orphans, orphan_ids = archive_orphans(songs, state, protected)
+        seen.update(orphan_ids)
+        if archived_orphans:
+            log(f"cleanup: {archived_orphans} mp3s huérfanos archivados")
+
+        unplayed = [song for song in songs if not song.get("heard") and song_file(song).exists()]
+        log(f"gestor: {len(unplayed)} sin reproducir de {len(songs)} en catálogo")
+
+        if len(unplayed) > args.low_watermark and not args.force:
+            exclude = {path_identity(now_playing)} if now_playing else set()
+            online_count, online_changed = write_queue(songs, target_climate, exclude)
+            offline_count, offline_changed = write_offline_queue(songs, state, protected)
+            state["mode"] = "online" if online_count else "offline"
+            save_songs(songs)
+            save_state(state)
+            save_seen(seen)
+            if online_changed:
+                log(f"gestor: queue.m3u escrito con {online_count} canciones.")
+            if offline_changed:
+                log(f"gestor: queue.offline.m3u escrito con {offline_count} canciones.")
+            cleanup_playback_events()
+            return 0
+
+        client_id = get_client_id()
+        if not client_id:
+            log("ERROR: falta JAMENDO_CLIENT_ID (env o scripts/.jamendo_client)")
+            new_songs = []
         else:
-            log("gestor: cola suficiente, sin cambios.")
-        sweep_orphans(songs, now_playing)
+            log(f"gestor: cola baja ({len(unplayed)} ≤ {args.low_watermark}). Descargando lote de {args.batch_size}...")
+            new_songs, _ = fetch_batch(client_id, target_climate, seen, args.batch_size, args.max_dist)
+        log(f"gestor: {len(new_songs)} canciones nuevas descargadas")
+
+        if new_songs:
+            songs.extend(new_songs)
+        songs, archived = archive_songs(songs, state, protected)
+        if archived:
+            log(f"gestor: {archived} canciones archivadas para fallback offline")
+
+        save_songs(songs)
+        save_seen(seen)
+
+        exclude = {path_identity(now_playing)} if now_playing else set()
+        online_count, online_changed = write_queue(songs, target_climate, exclude)
+        offline_count, offline_changed = write_offline_queue(songs, state, protected)
+        state["mode"] = "online" if online_count else "offline"
+        save_state(state)
+        remove_empty_music_dirs()
+        cleanup_playback_events()
+        if online_changed:
+            log(f"gestor: queue.m3u escrito con {online_count} canciones. Ciclo completado.")
+        else:
+            log(f"gestor: cola online sin cambios ({online_count} canciones).")
+        if offline_changed:
+            log(f"gestor: queue.offline.m3u escrito con {offline_count} canciones.")
+        if state["mode"] == "offline" and offline_count == 0:
+            available = any(song.get("heard") and song_file(song).exists() for song in songs)
+            if not available:
+                log("ERROR: fallback offline sin archivos disponibles")
+                return 2
+            log("gestor: fallback offline en espera (pistas aún protegidas por la cola online)")
         return 0
-
-    # ── descargar nuevo lote ──────────────────────────────────────────────────
-    client_id = get_client_id()
-    if not client_id:
-        log("ERROR: falta JAMENDO_CLIENT_ID (env o scripts/.jamendo_client)")
-        return 1
-
-    log(f"gestor: cola baja ({len(unplayed)} ≤ {args.low_watermark}). "
-        f"Descargando lote de {args.batch_size}...")
-
-    seen      = load_seen()
-    new_songs = fetch_batch(client_id, target_climate, seen, args.batch_size)
-    log(f"gestor: {len(new_songs)} canciones nuevas descargadas")
-
-    if not new_songs and not unplayed:
-        # Sin nuevas y sin cola: no tocar nada, se reintenta en el próximo ciclo.
-        log("ERROR: sin canciones disponibles (se reintentará).")
-        return 1
-
-    # ── sacar las escuchadas (o sin archivo) y liberar disco ──────────────────
-    salientes = [s for s in songs if s.get("heard") or not exists(s)]
-    if salientes:
-        log(f"gestor: descartando {len(salientes)} canciones escuchadas...")
-        delete_songs(salientes, protect_path=now_playing)
-
-    # ── nuevo catálogo: unplayed + recién descargadas ─────────────────────────
-    songs = unplayed + new_songs
-
-    # Seguridad: si por alguna razón superamos el máximo, recortar las más viejas
-    if len(songs) > MAX_CATALOG:
-        songs = songs[-MAX_CATALOG:]
-
-    save_songs(songs)
-    save_seen(seen)
-
-    # ── escribir cola ordenada por clima (solo si cambió) ──────────────────────
-    n, cambio = write_queue(songs, target_climate)
-    if cambio:
-        log(f"gestor: queue.m3u escrito con {n} canciones. Ciclo completado.")
-    else:
-        log(f"gestor: cola sin cambios ({n} canciones).")
-    sweep_orphans(songs, now_playing)
-    return 0
+    finally:
+        lock.close()
 
 
 if __name__ == "__main__":

@@ -33,22 +33,49 @@ def load_json(path):
         return []
 
 
+def track_identity(song):
+    name = Path(str(song.get("file", ""))).name
+    match = re.match(r"^(.*) - (\d+)$", Path(name).stem)
+    return match.group(2) if match else Path(name).stem
+
+
 class SongCache:
     def __init__(self, path):
         self.path = Path(path)
         self.mtime = None
         self.songs = []
         self.by_resolved_path = {}
+        self.by_basename = {}
+        self.by_identity = {}
 
     def get_by_fname(self, fname):
         if not fname:
             return None
         self.refresh()
         try:
-            resolved = str(Path(fname).resolve())
+            candidate = Path(str(fname))
+            if not candidate.is_absolute():
+                candidate = PROJECT_ROOT / candidate
+            resolved = str(candidate.resolve())
         except OSError:
             resolved = fname
-        return self.by_resolved_path.get(resolved)
+        song = self.by_resolved_path.get(resolved)
+        if song is not None:
+            return song
+        basename = Path(str(fname)).name
+        song = self.by_basename.get(basename)
+        if song is not None:
+            return song
+        return self.by_identity.get(track_identity({"file": basename}))
+
+    @staticmethod
+    def add_unique(mapping, key, value):
+        if not key:
+            return
+        if key in mapping and mapping[key] is not value:
+            mapping[key] = None
+        elif key not in mapping:
+            mapping[key] = value
 
     def refresh(self):
         try:
@@ -58,13 +85,21 @@ class SongCache:
         if self.mtime != current_mtime:
             self.songs = load_json(self.path)
             new_map = {}
+            new_basenames = {}
+            new_identities = {}
             for s in self.songs:
+                if not isinstance(s, dict) or not s.get("file"):
+                    continue
                 try:
                     rp = str((PROJECT_ROOT / s["file"]).resolve())
-                    new_map[rp] = s
                 except OSError:
                     continue
+                new_map[rp] = s
+                self.add_unique(new_basenames, Path(s["file"]).name, s)
+                self.add_unique(new_identities, track_identity(s), s)
             self.by_resolved_path = new_map
+            self.by_basename = new_basenames
+            self.by_identity = new_identities
             self.mtime = current_mtime
 
 

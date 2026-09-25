@@ -13,14 +13,24 @@ Jamendo filtered by a configurable atmosphere (mood, energy, texture, etc.).
 ## How it works
 
 1. `gestor.py` reads `clima.json` and downloads a batch of songs from Jamendo
-   filtered by `climate_distance()` (the ML hook — see below)
-2. Songs are written to `queue.m3u` ordered by climate proximity
-3. Liquidsoap plays them in order; on each track it calls `gestor.py`
-4. When fewer than 6 unplayed songs remain, `gestor.py` downloads a new batch,
-   deletes the played mp3s, and writes a fresh queue — no gaps, no repeats
+   filtered by `climate_distance()` (the ML hook — see below).
+2. Only unplayed tracks are written to `queue.m3u`, ordered by climate proximity.
+3. Liquidsoap plays the online queue and marks each track as started immediately;
+   that durable state is kept in `data/playback.json`.
+4. When the online queue is low, `gestor.py` downloads another batch. Played MP3s
+   are moved to `archive/music/` instead of being deleted and become the offline
+   fallback pool.
+5. If the online source is empty or renewal fails, Liquidsoap uses
+   `queue.offline.m3u`, ordered by the least-recently-played timestamp.
+6. `scripts/radio.sh start` brings the stream up first and renews the queues in
+   the background, so a slow download never keeps the stream offline.
 
-Song IDs are persisted in `data/jamendo_seen.json` so the same track is never
-downloaded twice across cycles.
+Normal online playback never repeats a track. Repetition is possible only when
+the offline fallback is exhausted or the service has no online material.
+
+Song IDs are persisted in `data/jamendo_seen.json`; playback timestamps and
+play counts are persisted in `data/playback.json`, so restarting the service or
+cleaning raw logs does not make a track eligible again.
 
 ## Usage
 
@@ -50,7 +60,9 @@ downloaded twice across cycles.
 |---|---|
 | `clima.json` | Target atmosphere (mood, genre, energy, texture, voice…) |
 | `.env` | Credentials — copy from `scripts/.env.example` |
-| `scripts/gestor.py` | Tunables: `LOW_WATERMARK`, `BATCH_SIZE`, `MAX_DIST` |
+| `scripts/gestor.py` | Tunables: `LOW_WATERMARK`, `BATCH_SIZE`, `MAX_DIST`, `HISTORY_RETENTION_DAYS` |
+| `data/playback.json` | Durable per-track playback state |
+| `data/jamendo_seen.json` | Permanent Jamendo ID history |
 
 ### clima.json example
 
@@ -70,6 +82,10 @@ downloaded twice across cycles.
 Los estilos (género) se toman del tag `genres` de Jamendo: agregá los que quieras
 como lista en `genero` (p.ej. `["folk", "indie"]`).
 
+`logs/played.tsv` se conserva durante `HISTORY_RETENTION_DAYS` (7 por defecto);
+`data/playback.json` y `data/jamendo_seen.json` son el estado anti-repetición
+permanente.
+
 ## ML hook
 
 `climate_distance(song_climate, target_climate) -> float` in `gestor.py` is
@@ -83,21 +99,26 @@ Expected signature: `(dict, dict) -> float` in `[0.0, 1.0]` (0 = perfect match).
 ```
 radio.liq            liquidsoap config
 clima.json           target climate
-songs.json           current catalog (downloaded mp3s + metadata)
-queue.m3u            current playlist (rewritten automatically)
+songs.json           current catalog and playback flags
+queue.m3u            online playlist (rewritten automatically)
+queue.offline.m3u    archive fallback playlist
 data/
+  playback.json      durable playback state
   jamendo_seen.json  all-time seen Jamendo IDs (never re-downloaded)
+archive/
+  music/             played MP3s retained for offline fallback
 logs/
   gestor.log         download + queue cycle log
-  played.txt         playback history (written by liquidsoap)
+  played.txt         web playback history
+  played.tsv         timestamped temporary playback events
   nowplaying.txt     currently playing track
-music/               mp3 files (auto-managed, old ones deleted after each cycle)
+music/               active downloaded MP3s
 scripts/
-  gestor.py          core: download, climate filter, queue management
+  gestor.py          core: download, climate filter, state, queues and archive
   web_server.py      web panel + /now and /history API
   radio.sh           start / stop / restart / status / logs
   refresh_queue.sh   cron backup (every 30 min)
-  cleanup_logs.sh    log rotation (daily)
+  cleanup_logs.sh    log rotation and temporary history cleanup
 ```
 
 ## License

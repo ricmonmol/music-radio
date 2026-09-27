@@ -1,0 +1,11 @@
+{
+  "genero": ["indierock", "alternativerock", "postrock"],
+  "mood": [],
+  "energy": 0.6,
+  "complexity": 0.5,
+  "textura": null,
+  "voz": null,
+  "instrumentacion": null,
+  "peso_clima": 0.6,
+  "peso_genero": 0.4
+}

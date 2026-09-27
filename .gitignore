@@ -11,3 +11,16 @@ scripts/.jamendo_client
 __pycache__/
 *.pyc
 liquidsoap.pid
+
+# radio-jacobs runtime (mismo criterio que la radio principal)
+radio-jacobs/music/
+radio-jacobs/archive/
+radio-jacobs/songs.json
+radio-jacobs/queue.m3u
+radio-jacobs/queue.offline.m3u
+radio-jacobs/logs/
+radio-jacobs/data/
+radio-jacobs/venv/
+radio-jacobs/.env
+radio-jacobs/liquidsoap.pid
+radio-jacobs/scripts/__pycache__/

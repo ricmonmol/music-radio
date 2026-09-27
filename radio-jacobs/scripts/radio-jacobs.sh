@@ -1,31 +1,39 @@
 #!/bin/bash
-# radio.sh — control de la radio (start / stop / restart / status / logs)
+# radio-jacobs.sh — control de la radio AJC (start / stop / restart / status / logs)
+#
+# AJC comparte icecast, el venv y el panel web con radio/, pero tiene su propio
+# liquidsoap, sus propias colas y su propio gestor. Por eso este script NUNCA
+# usa "pkill -x liquidsoap": mataría también el liquidsoap de la radio de
+# Jamendo. Solo se toca el PID de liquidsoap.pid, y se verifica que ese PID
+# pertenezca de verdad a esta estación (comparando su cwd) antes de matarlo.
+#
+# El web server NO se toca acá: es compartido y lo levanta radio/scripts/radio.sh.
 #
 # Uso:
-#   ./scripts/radio.sh start    levanta icecast + liquidsoap + web
-#   ./scripts/radio.sh stop     apaga liquidsoap + web (icecast queda corriendo)
-#   ./scripts/radio.sh restart  stop + start
-#   ./scripts/radio.sh status   muestra si cada servicio responde
-#   ./scripts/radio.sh logs     tail -f de los logs principales
+#   ./scripts/radio-jacobs.sh start     levanta liquidsoap (+ gestor en bg)
+#   ./scripts/radio-jacobs.sh stop      apaga liquidsoap y el gestor
+#   ./scripts/radio-jacobs.sh restart
+#   ./scripts/radio-jacobs.sh status
+#   ./scripts/radio-jacobs.sh logs
 set -euo pipefail
-cd "$(dirname "$0")/.."   # siempre desde la raíz del proyecto
+cd "$(dirname "$0")/.."   # siempre desde la raíz de la estación
 
 PIDFILE="liquidsoap.pid"
+GESTOR="scripts/ia_gestor.py"
 PYTHON="./venv/bin/python"
-GESTOR="scripts/gestor.py"
+MOUNT="/jacobs"
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 # Devuelve el PID solo si ese proceso es un liquidsoap lanzado desde ESTA
-# estación. Sin esta comprobación, "pkill -x liquidsoap" mataba también el
-# liquidsoap de radio-jacobs/ (la Aadam Jacobs Collection), que comparte
-# icecast y panel pero no catálogo. Comparar el cwd evita cruzar las radios.
+# estación. Si el PID se recicló o el archivo quedó viejo, no se mata nada.
 _own_liquidsoap_pid() {
     [ -f "$PIDFILE" ] || return 0
     local pid
     pid=$(cat "$PIDFILE" 2>/dev/null || true)
     [ -n "$pid" ] || return 0
     kill -0 "$pid" 2>/dev/null || return 0
+    # /proc/<pid>/cwd debe ser la raíz de esta estación
     local cwd
     cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || true)
     if [ "$cwd" != "$(pwd -P)" ]; then
@@ -36,13 +44,12 @@ _own_liquidsoap_pid() {
 }
 
 _own_gestor_pids() {
-    # "gestor.py" también matchearía "ia_gestor.py" de la otra estación si no
-    # se ancla al path completo: se exige "python.../scripts/gestor.py".
-    pgrep -f "python.*/${GESTOR}\$" 2>/dev/null || true
+    # pgrep -f acotado al path del gestor de esta estación: "ia_gestor.py"
+    # no matchea "gestor.py" de la otra radio.
+    pgrep -f "python.*${GESTOR}" 2>/dev/null || true
 }
 
 _stop() {
-    # Liquidsoap (solo el de esta estación)
     local pid
     pid=$(_own_liquidsoap_pid)
     if [ -n "$pid" ]; then
@@ -52,18 +59,18 @@ _stop() {
         kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
     fi
     rm -f "$PIDFILE"
-    # Web server (compartido: sirve las dos estaciones, por eso se para desde acá)
-    pkill -f "python.*scripts/web_server.py" 2>/dev/null || true
+
     # Gestor (descarga en curso) — solo el de esta estación
     local gpid
     for gpid in $(_own_gestor_pids); do
+        echo "→ Deteniendo gestor (PID $gpid)..."
         kill "$gpid" 2>/dev/null || true
     done
     sleep 0.5
 }
 
 _start() {
-    # Icecast (idempotente)
+    # Icecast es compartido: si ya corre, no se toca.
     if ! systemctl is-active --quiet icecast2 2>/dev/null; then
         echo "→ Arrancando icecast2..."
         systemctl start icecast2 2>/dev/null \
@@ -73,7 +80,7 @@ _start() {
     fi
 
     [ -f .env ] && { set -a; . ./.env; set +a; } || true
-    mkdir -p logs data
+    mkdir -p logs data music archive/music
 
     if [ ! -f queue.m3u ] || [ ! -s queue.m3u ]; then
         printf '#EXTM3U\n' > queue.m3u
@@ -85,19 +92,13 @@ _start() {
     echo "→ Arrancando liquidsoap..."
     setsid nohup liquidsoap radio.liq >> logs/liquidsoap.out 2>&1 < /dev/null &
     echo "$!" > "$PIDFILE"
-    echo "  liquidsoap PID $!"
-
-    echo "→ Arrancando web server..."
-    setsid nohup $PYTHON scripts/web_server.py --host 0.0.0.0 \
-        >> logs/web.out 2>&1 < /dev/null &
-    echo "  web server PID $!"
+    echo "  liquidsoap PID $! (mount $MOUNT)"
 
     # La renovación de colas sigue en segundo plano: el stream ya está en vivo
     # y la playlist se recarga sola cuando el gestor termina de escribir.
     echo "→ Renovando colas en segundo plano..."
-    setsid nohup $PYTHON scripts/gestor.py >> logs/gestor.log 2>&1 < /dev/null &
+    setsid nohup $PYTHON "$GESTOR" >> logs/gestor.log 2>&1 < /dev/null &
 
-    # Verificación
     sleep 4
     echo ""
     # Un stream de audio no termina nunca, así que "curl --max-time" sale con
@@ -113,7 +114,7 @@ _start() {
             echo "  $label : sin respuesta aún (liquidsoap puede tardar ~10 s)"
         fi
     }
-    _check "http://localhost:8000/radio" "Stream"
+    _check "http://localhost:8000$MOUNT" "Stream"
     _check "http://localhost:8080/" "Panel "
 }
 
@@ -122,44 +123,46 @@ _start() {
 case "${1:-}" in
 
   start)
-    echo "== radio: start =="
+    echo "== jacobs collection: start =="
     _start
     ;;
 
   stop)
-    echo "== radio: stop =="
+    echo "== jacobs collection: stop =="
     _stop
     echo "Detenido."
     ;;
 
   restart)
-    echo "== radio: restart =="
+    echo "== jacobs collection: restart =="
     _stop
     _start
     ;;
 
   status)
-    echo "== radio: status =="
+    echo "== jacobs collection: status =="
     liq="inactivo"
     if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
         liq="corriendo (PID $(cat "$PIDFILE"))"
     fi
-    web="inactivo"
-    wpid=$(pgrep -f web_server.py 2>/dev/null | head -1 || true)
-    [ -n "$wpid" ] && web="corriendo (PID $wpid)"
+    gestor="inactivo"
+    gpid=$(_own_gestor_pids | head -1)
+    [ -n "$gpid" ] && gestor="corriendo (PID $gpid)"
     ice=$(systemctl is-active icecast2 2>/dev/null || echo "desconocido")
 
     echo "  Icecast    : $ice"
     echo "  Liquidsoap : $liq"
-    echo "  Web server : $web"
+    echo "  Gestor     : $gestor"
+    echo "  Mount      : $MOUNT"
+    echo "  Panel      : http://localhost:8080/ (compartido)"
     echo ""
     $PYTHON scripts/listeners.py --all
     echo ""
-    $PYTHON scripts/gestor.py --status
+    $PYTHON "$GESTOR" --status
     ;;
 
   logs)
-    tail -f logs/gestor.log logs/liquidsoap.out logs/web.out 2>/dev/null
+    tail -f logs/gestor.log logs/liquidsoap.out 2>/dev/null
     ;;
 
   *)

@@ -45,17 +45,28 @@ def handle_track(m) =
     last_fname := fname
     file.write(data=(fname ^ "|" ^ artist ^ " — " ^ title), nowplaying_file)
     file.write(data=(fname ^ "|" ^ artist ^ " — " ^ title ^ "\n"), append=true, played_file)
+    # --mark-played es rápido (solo actualiza estado); corre en background
+    # para no trabar el hilo de audio en caso de lock contention.
     ignore(process.run(
-      "./venv/bin/python scripts/gestor.py --mark-played " ^ process.quote(fname) ^
-      " >/dev/null 2>&1"
+      "sh -c " ^ process.quote(
+        "./venv/bin/python scripts/ia_gestor.py --mark-played " ^
+        process.quote(fname) ^ " >/dev/null 2>&1 &"
+      )
     ))
+    # El gestor completo puede tardar ~37 min descargando un lote de 120 pistas.
+    # Se lanza con sh -c '... &' para que la shell haga el fork real y
+    # process.run retorne inmediatamente sin bloquear el stream.
     ignore(process.run(
-      "./venv/bin/python scripts/gestor.py >> logs/gestor.log 2>&1 &"
+      "sh -c " ^ process.quote(
+        "./venv/bin/python scripts/ia_gestor.py >> logs/gestor.log 2>&1 &"
+      )
     ))
   end
 end
 
-play_src.on_track(synchronous=true, handle_track)
+# synchronous=false: handle_track corre en un hilo separado y no detiene
+# la fuente de audio mientras escribe archivos o espera el fork del gestor.
+play_src.on_track(synchronous=false, handle_track)
 
 def env_or(k, d) =
   l = process.read.lines("sh -c 'echo -n \"$" ^ k ^ "\"'")
@@ -75,7 +86,7 @@ end
 # Gate de oyentes: el stream sigue vivo siempre, pero la playlist solo
 # avanza si hay alguien conectado. Sin oyentes se emite silencio, para no
 # gastar canciones ni marcarlas como escuchadas. IDLE_POLL=0 lo desactiva.
-mount     = "/radio"
+mount     = "/jacobs"
 idle_poll = env_float("IDLE_POLL", 5.0)
 idle_hits = env_int("IDLE_HITS", 3)
 idle_log  = env_int("IDLE_LOG_EVERY", 60)
@@ -143,12 +154,12 @@ if idle_poll > 0.0 then
 end
 
 output.icecast(
-  mount       = "/radio",
+  mount       = "/jacobs",
   host        = "localhost",
   port        = 8000,
   password    = env_or("ICE_PASSWORD", ""),
-  name        = "Radio algorítmica",
-  description = "Radio basada en clima musical",
+  name        = "Jacobs Collection",
+  description = "Aadam Jacobs Collection - archivo de sellos en vivo (1985-2023)",
   genre       = "indie",
   public      = true,
   %mp3(bitrate = 192, samplerate = 44100, stereo = true),

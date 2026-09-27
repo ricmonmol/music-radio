@@ -143,7 +143,10 @@ class GestorQueueTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        cache = web_server.SongCache(songs_path)
+        # El cache resuelve los paths de songs.json contra el root de la
+        # estación, no contra el PROJECT_ROOT del proceso: así el mismo panel
+        # sirve radio/ y radio-jacobs/ con un solo web_server.
+        cache = web_server.SongCache(songs_path, self.root)
         found = cache.get_by_fname("music/A/a/Moved - 41.mp3")
 
         self.assertEqual(found["title"], song["title"])
@@ -248,11 +251,19 @@ class GestorQueueTests(unittest.TestCase):
             return relative
 
         with mock.patch.object(gestor, "api_get", fake_api), mock.patch.object(gestor, "download_mp3", fake_download):
-            added, reason = gestor.fetch_batch("client", {}, {"1"}, 1, 0.55)
+            # fetch_batch recibe (client_id, target_climate, seen, state, n,
+            # max_dist): el state es el que guarda el offset por consulta, así
+            # va explícito para que el fallback de orden quede aislado.
+            added, reason = gestor.fetch_batch(
+                "client", {}, {"1"}, gestor.state_default(), 1, 0.55
+            )
 
         self.assertEqual(reason, "ok")
+        # _sweep no corta con la primera respuesta vacía: la API devuelve 200
+        # con cuerpo vacío cuando limita el ritmo, así que reintenta el mismo
+        # orden una vez y recién después da la ventana por agotada.
         self.assertEqual([entry["jamendo_id"] for entry in added], ["2"])
-        self.assertEqual(orders, ["relevance", "releasedate_desc"])
+        self.assertEqual(orders, ["relevance", "relevance", "releasedate_desc"])
 
     def test_main_without_network_keeps_online_and_offline_separate(self):
         pending = self.make_song("music/P/p/Pending - 50.mp3")
@@ -368,6 +379,287 @@ class GestorQueueTests(unittest.TestCase):
             [gestor.path_identity(self.root / "archive" / "music" / "P" / "p" / "Cycle - 80.mp3")],
         )
         self.assertEqual(gestor.load_seen(), {"99"})
+
+
+IA_MODULE_PATH = (
+    Path(__file__).resolve().parents[2] / "radio-jacobs" / "scripts" / "ia_gestor.py"
+)
+ia_spec = importlib.util.spec_from_file_location("ia_gestor_under_test", IA_MODULE_PATH)
+ia_gestor = importlib.util.module_from_spec(ia_spec)
+ia_spec.loader.exec_module(ia_gestor)
+
+
+class JacobsParserTests(unittest.TestCase):
+    """Parsing de la Aadam Jacobs Collection.
+
+    Los casos caternos son de shows reales de la colección, no inventados: los
+    ítems viejos (ajcNNNNN_*) traen description en texto plano y metadata.venue
+    / metadata.taper, y los nuevos (NNNN_bandaAAAA-MM-DD) traen description en
+    HTML <div>, sin esos campos, y setlist numerado. Los dos formatos ya
+    rompieron el parser en producción antes de esto.
+    """
+
+    def test_description_lines_splits_html_divs(self):
+        html = "<div>Freakons</div><div>2013</div><br /><div>01 One</div>"
+        self.assertEqual(ia_gestor.description_lines(html), ["Freakons", "2013", "01 One"])
+
+    def test_setlist_reads_html_numbered_lines(self):
+        html = "<div>01 Tim Tuten intro</div><div>02 Chestnut Blight</div>"
+        self.assertEqual(
+            ia_gestor.parse_setlist(html),
+            {1: "Tim Tuten intro", 2: "Chestnut Blight"},
+        )
+
+    def test_setlist_reads_plain_text_and_skips_bracket_lines(self):
+        text = "01 Heroin\n[stage banter]\n3. Sally Boy Candy Bar"
+        self.assertEqual(
+            ia_gestor.parse_setlist(text),
+            {1: "Heroin", 3: "Sally Boy Candy Bar"},
+        )
+
+    def test_setlist_ignores_explicit_no_setlist(self):
+        self.assertEqual(ia_gestor.parse_setlist("Command Module\n\nno setlist"), {})
+
+    def test_parse_seconds_handles_both_archive_formats(self):
+        # MP3 derivado viene "mm:ss"; el FLAC maestro en segundos con decimales.
+        self.assertEqual(ia_gestor.parse_seconds("03:20"), 200.0)
+        self.assertEqual(ia_gestor.parse_seconds("199.92"), 199.92)
+        self.assertIsNone(ia_gestor.parse_seconds(""))
+        self.assertIsNone(ia_gestor.parse_seconds(None))
+
+    def test_license_of_etree_item_is_permission(self):
+        meta = {"collection": ["aadamjacobs", "etree"]}
+        self.assertEqual(ia_gestor.license_of(meta), "permission")
+
+    def test_license_of_creative_commons_item(self):
+        # Sin pasar por las colecciones de permiso: si el item dice pertenecer a
+        # aadamjacobs/etree, license_of devuelve "permission" aunque traiga
+        # licenseurl. La membresía explícita de la colección manda.
+        meta = {
+            "collection": ["audio"],
+            "licenseurl": "http://creativecommons.org/licenses/by-nc-sa/4.0/",
+        }
+        self.assertEqual(ia_gestor.license_of(meta), "cc-by-nc")
+
+    def test_no_derivatives_licenses_are_not_emitted(self):
+        # ND y "zero" están mapeados a None a propósito: no se emite material
+        # que prohíban derivada ni que sea de dominio público.
+        for url in (
+            "http://creativecommons.org/licenses/by-nc-nd/4.0/",
+            "http://creativecommons.org/licenses/by-nd/4.0/",
+        ):
+            self.assertIsNone(ia_gestor.license_short(url), url)
+
+    def test_tracks_of_reads_files_sibling_not_metadata(self):
+        """files es hermano de metadata en /metadata/<id>, no un subcampo."""
+        doc = {
+            "metadata": {
+                "title": "Freakons Live at The Hideout",
+                "creator": "Freakons",
+                "date": "2013-09-22",
+                "description": "<div>01 One</div><div>02 Two</div>",
+            },
+            "files": [
+                {
+                    "name": "01 One.mp3",
+                    "format": "VBR MP3",
+                    "source": "derivative",
+                    "length": "03:20",
+                    "track": "1",
+                    "title": "untitled",
+                },
+                {
+                    "name": "01 One.flac",
+                    "format": "Flac",
+                    "source": "original",
+                    "length": "199.92",
+                    "track": "1",
+                },
+                {
+                    "name": "02 Two.mp3",
+                    "format": "VBR MP3",
+                    "source": "derivative",
+                    "length": "12:00",
+                    "track": "2",
+                },
+            ],
+        }
+        tracks = ia_gestor.tracks_of(doc, "0120_freakons2013-09-22")
+
+        # Solo MP3 derivados, y se descarta el de 12 min (MAX_TRACK_SECONDS).
+        self.assertEqual([t["track"] for t in tracks], [1])
+        first = tracks[0]
+        self.assertEqual(first["title"], "One")
+        self.assertEqual(first["duration_seconds"], 200)
+        self.assertEqual(first["archive_id"], "0120_freakons2013-09-22t01")
+        self.assertTrue(first["file_url"].endswith("01%20One.mp3"))
+
+    def _talk_doc(self, titles):
+        """Arma un /metadata con una pista derivative por cada título dado."""
+        return {
+            "metadata": {"title": "Show", "creator": "Someone", "date": "2013-01-01"},
+            "files": [
+                {"name": f"{i:02d} {t}.mp3", "source": "derivative",
+                 "length": "03:00", "track": str(i), "title": t}
+                for i, t in enumerate(titles, start=1)
+            ],
+        }
+
+    def _kept_titles(self, titles):
+        doc = self._talk_doc(titles)
+        out = ia_gestor.tracks_of(doc, "9999_show")
+        return [t["title"] for t in out]
+
+    def test_tracks_of_drops_talk_tracks(self):
+        self.assertEqual(self._kept_titles([
+            "Another Sunny Day", "chat", "Tainted Love", "Tuning", "Your Turn",
+        ]), ["Another Sunny Day", "Tainted Love", "Your Turn"])
+
+    def test_tracks_of_drops_bare_intro_but_keeps_named_one(self):
+        # En los sets de WFMU la pista 1 es la presentación del pinchador, y se
+        # titula solo "intro". Pero hay instrumentales de verdad que se llaman
+        # "Solar Winds Intro", y esos hay que conservarlos.
+        self.assertEqual(self._kept_titles([
+            "intro", "Tainted Love", "MC intro", "Solar Winds intro",
+        ]), ["Tainted Love", "Solar Winds intro"])
+
+    def test_tracks_of_keeps_intro_with_extra_words(self):
+        # "Part One - Introduction - The Adoration of the Earth" es una pieza con
+        # nombre, no una presentación: el patrón solo cae el intro que no dice
+        # nada más.
+        self.assertEqual(self._kept_titles([
+            "Part One - Introduction - The Adoration of the Earth [2:53]",
+            "Part Two",
+        ]), ["Part One - Introduction - The Adoration of the Earth [2:53]",
+            "Part Two"])
+
+    def test_track_key_accepts_archive_ids(self):
+        """El id de archive.org es alfanumérico, no numérico como el de Jamendo."""
+        key = ia_gestor.track_key("music/A/a/One - 0120_freakons2013-09-22t01.mp3")
+        self.assertEqual(key, "archive:0120_freakons2013-09-22t01")
+        # El patrón es codicioso a propósito: el archivo es "{título} - {id}",
+        # y los títulos pueden contener " - " (Sun Ra - Space Is the Place).
+        # Partir por el ÚLTIMO separador es lo que recupera el id bien.
+        self.assertEqual(
+            ia_gestor.track_key("music/A/a/Sun Ra - Space Is the Place - 0120_x_t01.mp3"),
+            "archive:0120_x_t01",
+        )
+
+    def test_web_cache_identity_matches_archive_ids(self):
+        self.assertEqual(
+            web_server.track_identity({"file": "music/A/a/One - 0120_x2013-09-22t01.mp3"}),
+            "0120_x2013-09-22t01",
+        )
+        # El caso de Jamendo sigue funcionando.
+        self.assertEqual(web_server.track_identity({"file": "music/A/a/One - 41.mp3"}), "41")
+
+    def test_stations_config_resolves_both_roots(self):
+        stations, default_id = web_server.load_stations()
+        self.assertEqual(default_id, "algoritmica")
+        by_id = {st["id"]: st for st in stations}
+        self.assertEqual(sorted(by_id), ["algoritmica", "jacobs"])
+        for st in stations:
+            self.assertTrue(Path(st["root"]).is_dir(), st["root"])
+            self.assertTrue((Path(st["root"]) / "songs.json").exists(), st["id"])
+        self.assertEqual(by_id["algoritmica"]["mount"], "/radio")
+        self.assertEqual(by_id["jacobs"]["mount"], "/jacobs")
+
+
+def _sweep_stub(results):
+    """Devuelve un _sweep falso que responde según la lista de resultados.
+
+    Cada elemento es (cursor, reason, n_canciones) y se consume en orden; si
+    se llama más veces que resultados hay, repite el último. Registra los
+    cursores con los que fue llamado en `calls`, que es lo que se asserta.
+    """
+    calls = []
+
+    def stub(target_climate, seen, existing_ids, added, per_artist,
+             n, max_dist, page_size, cursor):
+        index = len(calls)
+        calls.append(cursor)
+        new_cursor, reason, n_songs = results[min(index, len(results) - 1)]
+        for i in range(n_songs):
+            added.append({"archive_id": f"stub-{index}-{i}"})
+        return new_cursor, reason
+
+    return stub, calls
+
+
+class JacobsCursorWrapTests(unittest.TestCase):
+    """Reinicio del cursor al terminar la colección.
+
+    El dedup de fetch_batch es por canción, así que volver al principio relee
+    shows y les saca las pistas que faltaban sin repetir nada. El riesgo real es
+    el contrario: una colección ya consumida haciendo pedidos inútiles a
+    archive.org en cada ciclo. Estos tests fijan las dos mitades.
+    """
+
+    def _run(self, state, results, n=10):
+        stub, calls = _sweep_stub(results)
+        with mock.patch.object(ia_gestor, "_sweep", stub), \
+             mock.patch.object(ia_gestor, "load_songs", return_value=[]), \
+             mock.patch.object(ia_gestor, "log", return_value=None):
+            added, reason = ia_gestor.fetch_batch({}, set(), state, n, 0.55)
+        return added, reason, calls
+
+    def test_reinicia_el_cursor_al_llegar_al_final(self):
+        state = {"source": {"identifier": "9999_z", "pasada": 0,
+                            "canciones_pasada": 3}}
+        added, reason, calls = self._run(
+            state, [("9999_z", "empty", 0), ("0100_a", "ok", 4)], n=4)
+        self.assertEqual(len(calls), 2, "debe barrenar una vez y reintentar una")
+        self.assertEqual(calls[1], ia_gestor.IA_CURSOR_START)
+        self.assertEqual(state["source"]["pasada"], 1)
+        self.assertEqual(state["source"]["identifier"], "0100_a")
+        self.assertEqual(len(added), 4)
+        self.assertEqual(reason, "ok")
+
+    def test_no_reinicia_si_la_pasada_no_saco_nada(self):
+        # Pasada > 0 y 0 canciones acumuladas = colección agotada. Un reinicio
+        # aquí vuelven los 3.430 shows de requests al pedo, en cada ciclo.
+        state = {"source": {"identifier": "9999_z", "pasada": 1,
+                            "canciones_pasada": 0}}
+        added, reason, calls = self._run(state, [("9999_z", "empty", 0)])
+        self.assertEqual(len(calls), 1, "no debe reintentar si la pasada fue estéril")
+        self.assertEqual(state["source"]["pasada"], 1)
+        self.assertEqual(reason, "exhausted")
+        self.assertEqual(added, [])
+
+    def test_acumula_canciones_de_la_pasada_entre_ciclos(self):
+        # El total vive en el estado, así que tiene que sobrevivir entre ciclos
+        # y solo se resetea cuando el cursor da la vuelta.
+        state = {"source": {"identifier": "0100_a", "pasada": 1,
+                            "canciones_pasada": 5}}
+        added, reason, calls = self._run(state, [("0101_b", "ok", 3)], n=3)
+        self.assertEqual(len(calls), 1, "reason ok no dispara reinicio")
+        self.assertEqual(state["source"]["canciones_pasada"], 8)
+        self.assertEqual(reason, "ok")
+
+    def test_tope_de_vueltas_por_ciclo(self):
+        # Aunque la vuelta nueva también termine en "empty", el bucle para.
+        state = {"source": {"identifier": "9999_z", "pasada": 0,
+                            "canciones_pasada": 7}}
+        added, reason, calls = self._run(state, [("9999_z", "empty", 0)])
+        self.assertEqual(len(calls), ia_gestor.MAX_WRAPS + 1)
+        self.assertEqual(reason, "exhausted")
+
+    def test_error_de_red_no_reinicia_el_cursor(self):
+        # Un 500 de archive.org no es "se terminó la colección": no se toca el
+        # cursor ni el contador de pasadas, se reintenta el ciclo que viene.
+        state = {"source": {"identifier": "0100_a", "pasada": 0,
+                            "canciones_pasada": 0}}
+        added, reason, calls = self._run(state, [("0100_a", "network_error", 0)])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(reason, "network_error")
+        self.assertEqual(state["source"]["identifier"], "0100_a")
+        self.assertEqual(state["source"]["pasada"], 0)
+
+    def test_estado_vacio_usa_el_inicio_del_cursor(self):
+        state = {"source": {}}
+        added, reason, calls = self._run(state, [("0100_a", "ok", 2)], n=2)
+        self.assertEqual(calls[0], ia_gestor.IA_CURSOR_START)
+        self.assertEqual(reason, "ok")
 
 
 if __name__ == "__main__":

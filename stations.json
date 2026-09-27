@@ -1,0 +1,17 @@
+{
+  "default": "jacobs",
+  "stations": [
+    {
+      "id": "jacobs",
+      "label": "jacobs collection",
+      "root": "radio-jacobs",
+      "mount": "/jacobs"
+    },
+    {
+      "id": "algoritmica",
+      "label": "jamendo radio",
+      "root": ".",
+      "mount": "/radio"
+    }
+  ]
+}

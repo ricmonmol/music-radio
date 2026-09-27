@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="es">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -41,10 +41,47 @@
       /* ── header ── */
       .header {
         color: #e5e5e5;
-        margin-bottom: 2rem;
+        margin-bottom: 1.25rem;
       }
       .header .dollar {
         color: #4ade80;
+      }
+
+      /* ── pestañas de estación ── */
+      .tabs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+        border-bottom: 1px solid #2a2a2a;
+        margin-bottom: 1.5rem;
+      }
+
+      .tab {
+        background: none;
+        border: 1px solid transparent;
+        border-bottom: none;
+        font-family: inherit;
+        font-size: 0.82rem;
+        color: #6b6b6b;
+        cursor: pointer;
+        padding: 0.3rem 0.7rem;
+        margin-bottom: -1px;
+        letter-spacing: 0.04em;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        line-height: 1.7;
+      }
+      .tab:hover {
+        color: #b0b0b0;
+      }
+      .tab[aria-selected="true"] {
+        color: #e5e5e5;
+        border-color: #2a2a2a;
+        background: #111;
+      }
+      .tab[aria-selected="true"] .tab-name {
+        color: #7dd3fc;
       }
 
       /* ── box now playing ── */
@@ -74,6 +111,20 @@
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+      }
+
+      /* ── crédito de archivo (lugar / fecha / grabador) ── */
+      .credit {
+        color: #6b6b6b;
+        font-size: 0.78rem;
+        margin-top: 0.5rem;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .credit b {
+        color: #8a8a8a;
+        font-weight: normal;
       }
 
       /* ── volume ── */
@@ -200,6 +251,10 @@
         font-size: 0.78rem;
       }
 
+      .foot-note {
+        color: #4a4a4a;
+      }
+
       .empty {
         color: #555;
         font-style: normal;
@@ -209,12 +264,15 @@
   <body>
     <div class="header"><span class="dollar">$</span> radio</div>
 
+    <div class="tabs" id="tabs" role="tablist"></div>
+
     <div class="now-box">
       <div class="now-artist" id="npArtist">—</div>
       <div>
         <span class="now-tree">└─ </span
         ><span class="now-title" id="npTitle"></span>
       </div>
+      <div class="credit" id="npCredit"></div>
     </div>
 
     <div class="vol-row">
@@ -224,23 +282,28 @@
         <input type="range" id="volSlider" min="0" max="100" value="80" />
       </div>
       <span class="vol-pct" id="volLabel">80%</span>
-      <button id="muteBtn" title="Silenciar / Activar">🔇</button>
+      <button id="muteBtn" title="Mute / Unmute">🔇</button>
     </div>
 
     <button id="playBtn">
-      <span class="arrow">&gt;</span> <span id="playLabel">escuchar</span>
+      <span class="arrow">&gt;</span> <span id="playLabel">listen</span>
     </button>
 
     <audio id="radio" autoplay preload="none" src="/radio"></audio>
 
-    <div class="hist-lbl">anteriores</div>
+    <div class="hist-lbl">previously played</div>
     <div id="hist"><span class="empty">—</span></div>
 
     <footer>
-      <a href="https://www.jamendo.com" target="_blank" rel="noopener"
-        >jamendo</a
+      <a href="https://www.jamendo.com" target="_blank" rel="noopener">jamendo</a>
+      ·
+      <a
+        href="https://archive.org/details/aadamjacobs"
+        target="_blank"
+        rel="noopener"
+        >jacobs archive</a
       >
-      · cc ·
+      ·
       <a
         href="https://github.com/ricmonmol/music-radio"
         target="_blank"
@@ -258,6 +321,7 @@
         </svg>
         ricmonmol</a
       >
+      · <span class="foot-note">non commercial project</span>
     </footer>
 
     <script>
@@ -282,6 +346,55 @@
       var volLabel = document.getElementById("volLabel");
       var volBarEl = document.getElementById("volBar");
       var muteBtn = document.getElementById("muteBtn");
+      var tabsEl = document.getElementById("tabs");
+      var npCredit = document.getElementById("npCredit");
+
+      // ── estaciones ───────────────────────────────────────────────────
+      var stations = [];
+      var current = null;
+
+      function stationById(id) {
+        for (var i = 0; i < stations.length; i++) {
+          if (stations[i].id === id) return stations[i];
+        }
+        return null;
+      }
+
+      function renderTabs() {
+        tabsEl.innerHTML = stations
+          .map(function (st) {
+            var on = current && st.id === current.id;
+            return (
+              '<button class="tab" role="tab" data-id="' +
+              esc(st.id) +
+              '" aria-selected="' +
+              (on ? "true" : "false") +
+              '">' +
+              '<span class="tab-name">' +
+              esc(st.label) +
+              "</span></button>"
+            );
+          })
+          .join("");
+        Array.prototype.forEach.call(tabsEl.querySelectorAll(".tab"), function (b) {
+          b.addEventListener("click", function () {
+            select(b.getAttribute("data-id"));
+          });
+        });
+      }
+
+      function select(id) {
+        var st = stationById(id);
+        if (!st || (current && current.id === st.id)) return;
+        var wasPlaying = !radio.paused;
+        current = st;
+        localStorage.setItem("radioStation", st.id);
+        renderTabs();
+        load();
+        loadHistory();
+        if (wasPlaying) startStream();
+        else tick();
+      }
 
       // Volumen guardado (default 80%)
       var savedVol = parseFloat(localStorage.getItem("radioVol") || "0.8");
@@ -313,7 +426,7 @@
 
       function tick() {
         var playing = !radio.paused;
-        playLabel.textContent = playing ? "pausar" : "escuchar";
+        playLabel.textContent = playing ? "pause" : "listen";
       }
       radio.addEventListener("play", function () {
         reconnectTry = 0;
@@ -366,8 +479,9 @@
         radio.load();
       }
       function startStream() {
+        if (!current) return;
         userStopped = false;
-        radio.src = "/radio?t=" + Date.now();
+        radio.src = current.mount + "?t=" + Date.now();
         radio.load();
         radio.play().catch(function () {});
       }
@@ -383,16 +497,28 @@
       tick();
 
       // ── now playing ──────────────────────────────────────────────────
+      function renderCredit(np) {
+        var bits = [];
+        if (np.venue) bits.push(np.venue);
+        if (np.recorded) bits.push(np.recorded);
+        if (np.taper) bits.push("taper: " + np.taper);
+        npCredit.textContent = bits.length ? bits.join(" · ") : "";
+      }
+
       async function load() {
+        if (!current) return;
         try {
-          var np = await fetch("/now").then(function (r) {
-            return r.json();
-          });
+          var np = await fetch("/now?station=" + encodeURIComponent(current.id)).then(
+            function (r) {
+              return r.json();
+            }
+          );
           var artistEl = document.getElementById("npArtist");
           var titleEl = document.getElementById("npTitle");
           if (!np || !np.title) {
             artistEl.textContent = "—";
             titleEl.textContent = "";
+            renderCredit({});
           } else {
             artistEl.textContent = (np.artist || "?").toUpperCase();
             if (np.track_url) {
@@ -405,20 +531,26 @@
             } else {
               titleEl.textContent = np.title;
             }
+            renderCredit(np);
           }
         } catch (e) {
           document.getElementById("npArtist").textContent = "—";
           document.getElementById("npTitle").textContent = "";
+          renderCredit({});
         }
       }
-      load();
       setInterval(load, 15000);
 
       // ── historial ─────────────────────────────────────────────────────
       async function loadHistory() {
+        if (!current) return;
         var el = document.getElementById("hist");
         try {
-          var items = await fetch("/history?n=8").then(function (r) {
+          var items = await fetch(
+            "/history?station=" +
+              encodeURIComponent(current.id) +
+              "&n=8"
+          ).then(function (r) {
             return r.json();
           });
           if (!items || !items.length) {
@@ -450,8 +582,34 @@
           el.innerHTML = '<span class="empty">—</span>';
         }
       }
-      loadHistory();
       setInterval(loadHistory, 30000);
+
+      // ── arranque ──────────────────────────────────────────────────────
+      (async function boot() {
+        var doc = { default: null, stations: [] };
+        try {
+          doc = await fetch("/stations").then(function (r) {
+            return r.json();
+          });
+        } catch (e) {
+          /* no config: panel stays blank but doesn't break */
+        }
+        stations = doc.stations || [];
+        var saved = localStorage.getItem("radioStation");
+        current =
+          stationById(saved) ||
+          stationById(doc.default) ||
+          stations[0] ||
+          null;
+        if (!current) return;
+        renderTabs();
+        load();
+        loadHistory();
+        // El <audio> arranca con src="/radio" hardcodeado; se realinea con la
+        // estación elegida para no quedar sonando la otra.
+        if (!radio.paused) startStream();
+        else radio.src = current.mount;
+      })();
     </script>
   </body>
 </html>

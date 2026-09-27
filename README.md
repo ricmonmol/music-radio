@@ -1,43 +1,106 @@
 # music-radio
 
-Streaming radio based on **musical climate**: downloads and plays songs from
-Jamendo filtered by a configurable atmosphere (mood, energy, texture, etc.).
+Streaming radio with two stations sharing a single Icecast server and web
+panel:
+
+| Station | Source | Mount |
+|---|---|---|
+| **Jamendo Radio** | Jamendo API — Creative Commons tracks filtered by musical climate | `/radio` |
+| **Aadam Jacobs Collection** | Internet Archive `aadamjacobs` — live recordings (1985–2023) | `/jacobs` |
+
+---
 
 ## Stack
 
-- **Liquidsoap** — audio playback and stream output
-- **Icecast2** — HTTP audio streaming
+- **Liquidsoap** — audio playback and stream output (one process per station)
+- **Icecast2** — HTTP audio streaming (shared)
 - **Python 3** (stdlib only) — download, climate filtering, queue, web panel
-- **Jamendo API** — free music source (Creative Commons)
+- **Jamendo API** — Creative Commons music source
+- **Internet Archive** — live concert archive (`aadamjacobs` collection)
 
-## How it works
+---
 
-1. `gestor.py` reads `clima.json` and downloads a batch of songs from Jamendo
-   filtered by `climate_distance()` (the ML hook — see below).
-2. Each `genero` in `clima.json` is also sent to Jamendo as `fuzzytags`, so the
-   style list does double duty: it both **narrows the search** and **scores the
-   results**. Every tag is its own result window, which multiplies how much of
-   Jamendo is reachable — the unfiltered search only ever returns a small,
-   popularity-ranked slice that runs dry.
+## Quick start
+
+```bash
+# First time only — install venv, liquidsoap, icecast2, copy .env
+cp scripts/.env.example .env
+cp scripts/.env.example radio-jacobs/.env
+# Edit both .env files with your ICE_PASSWORD
+
+# Start / stop / restart both stations at once
+./reset.sh            # full reset (kills everything, restarts clean)
+./reset.sh start      # start only
+./reset.sh stop       # stop only
+./reset.sh status     # show processes, streams, listeners, now-playing
+```
+
+**Listen:**
+- Jacobs Collection → `http://your-server:8000/jacobs`
+- Jamendo Radio → `http://your-server:8000/radio`
+
+**Web panel:** `http://your-server:8080`
+
+---
+
+## How it works — Jamendo Radio
+
+1. `gestor.py` reads `clima.json` and downloads a batch from Jamendo filtered
+   by `climate_distance()` (the ML hook — see below).
+2. Each `genero` in `clima.json` is sent to Jamendo as `fuzzytags`, so the
+   style list both **narrows the search** and **scores the results**. Every tag
+   is its own result window, which multiplies how much of Jamendo is reachable.
 3. Only unplayed tracks are written to `queue.m3u`, ordered by climate proximity.
-4. Liquidsoap plays the online queue and marks each track as started immediately;
-   that durable state is kept in `data/playback.json`.
-5. When the online queue is low, `gestor.py` downloads another batch. Played MP3s
-   are moved to `archive/music/` instead of being deleted and become the offline
-   fallback pool.
-6. If the online source is empty or renewal fails, Liquidsoap uses
-   `queue.offline.m3u`, ordered by the least-recently-played timestamp.
-7. `scripts/radio.sh start` brings the stream up first and renews the queues in
-   the background, so a slow download never keeps the stream offline.
-
-Normal online playback never repeats a track. Repetition is possible only when
-the offline fallback is exhausted or the service has no online material.
+4. Liquidsoap plays the online queue; each track is marked as started immediately
+   and state is persisted in `data/playback.json`.
+5. When the queue is low, `gestor.py` downloads another batch. Played MP3s are
+   moved to `archive/music/` and become the offline fallback pool.
+6. If the online source is empty, Liquidsoap falls back to `queue.offline.m3u`
+   ordered by least-recently-played timestamp.
 
 Song IDs are persisted in `data/jamendo_seen.json`; playback timestamps and
-play counts are persisted in `data/playback.json`, so restarting the service or
-cleaning raw logs does not make a track eligible again.
+play counts are persisted in `data/playback.json` — restarting never makes a
+track eligible again.
 
-## Ingest behaviour
+---
+
+## How it works — Aadam Jacobs Collection
+
+1. `radio-jacobs/scripts/ia_gestor.py` reads `radio-jacobs/clima.json` and
+   walks the `aadamjacobs` collection on Internet Archive using a persistent
+   cursor (ordered by identifier, resumable across restarts).
+2. Per show it picks up to **2 tracks** (`MAX_TRACKS_PER_SHOW`) — MP3
+   derivatives only, 10 s–7 min long, excluding crowd noise, tuning and bare
+   intros.
+3. All shows in the collection carry the Live Music Archive permission model
+   (public, free, non-commercial with attribution). The license is emitted as
+   `"permission"` in `songs.json`; attribution (venue, date, taper) travels to
+   the web panel.
+4. The queue is shuffled randomly (`write_queue`). Climate distance is computed
+   but currently always passes (`IA_ENERGY` and `IA_COMPLEXITY` are fixed
+   constants matching the target). Once `data/band_genero.json` is populated
+   with real genres per band, `climate_distance` becomes a live filter.
+5. A `LOW_WATERMARK` of 20 tracks and a `BATCH_SIZE` of 120 gives ≈ 9 h of
+   music in the box at all times (≈ 600 MB on disk).
+
+---
+
+## Listener gate
+
+Both stations pause playback when no one is connected, so tracks and download
+quota are not wasted on an empty audience. The gate is configured via `.env`:
+
+```bash
+IDLE_POLL=2.0   # seconds between listener polls (0 = disable gate)
+IDLE_HITS=1     # consecutive empty polls before pausing
+```
+
+With the defaults above the station resumes within **2 seconds** of a new
+connection.
+
+---
+
+## Ingest behaviour — Jamendo
 
 `data/playback.json` → `source` keeps the ingest cursor:
 
@@ -48,63 +111,72 @@ cleaning raw logs does not make a track eligible again.
 }
 ```
 
-- `tag_index` rotates which `genero` starts each cycle, so every tag gets used
-  instead of the first one filling every batch.
+- `tag_index` rotates which `genero` starts each cycle so every tag gets used.
 - `offsets` remembers how deep each `(tag, order)` window was read. Without it
   every cycle re-reads the top of the ranking, `jamendo_seen.json` swallows it,
   and the station quietly runs dry.
 
-Two Jamendo quirks the code works around:
+---
 
-- **Rate limiting returns HTTP 200 with an empty body**, not an error. `api_get`
-  retries those with backoff and reports them as `empty`, and a sweep only
-  treats a window as finished after two empty pages in a row.
-- **Some artists publish blocks of 20+ tracks** under a single tag, so one tag
-  would otherwise supply half a batch. `MAX_TRACKS_PER_ARTIST` caps it.
+## Ingest behaviour — Aadam Jacobs Collection
 
-Every cycle logs which tags were queried, why each sweep stopped, and how many
-of the requested songs it actually got:
+`radio-jacobs/data/playback.json` → `source` keeps the cursor:
 
+```json
+"source": {
+  "identifier": "ajc01234_band_name_2005-06-07",
+  "pasada": 1,
+  "canciones_pasada": 87
+}
 ```
-gestor: consulta con bluesrock, americana; motivos={'ok': 1, 'empty': 2}; candidatos nuevos acumulados=25/25
-```
 
-If that line shows `exhausted` counts climbing, the window really is drained
-rather than rate limited.
+- `identifier` is the last Archive.org identifier read. The next cycle queries
+  `identifier:[cursor TO *]` ordered ascending, so the sweep always moves
+  forward.
+- When the end of the collection is reached the cursor wraps to the start for
+  another pass. The dedup is per **track** (`data/archive_seen.json`), so
+  re-reading a show only adds the tracks not yet downloaded.
+- If a full pass produces 0 new tracks the collection is considered exhausted
+  and the gestor stops until new shows are added to the archive.
 
-## Usage
+---
+
+## Per-station management
 
 ```bash
-# Start everything (icecast + liquidsoap + web panel)
-./scripts/radio.sh start
+# Jamendo Radio
+./scripts/radio.sh start|stop|restart|status|logs
 
-# Stop
-./scripts/radio.sh stop
-
-# Restart (e.g. after editing radio.liq or clima.json)
-./scripts/radio.sh restart
-
-# Show status + catalog info
-./scripts/radio.sh status
-
-# Tail logs
-./scripts/radio.sh logs
+# Aadam Jacobs Collection
+./radio-jacobs/scripts/radio-jacobs.sh start|stop|restart|status|logs
 ```
 
-**Listen:** `http://localhost:8000/radio`  
-**Web panel:** `http://localhost:8080`
+---
 
 ## Configuration
+
+### Jamendo Radio
 
 | File | Purpose |
 |---|---|
 | `clima.json` | Target atmosphere (mood, genre, energy, texture, voice…) |
-| `.env` | Credentials — copy from `scripts/.env.example` |
-| `scripts/gestor.py` | Tunables: `LOW_WATERMARK`, `BATCH_SIZE`, `MAX_DIST`, `GENERO_PENALTY_CAP`, `MAX_TRACKS_PER_ARTIST`, `SOURCE_MAX_TAGS`, `SOURCE_MAX_PAGES`, `HISTORY_RETENTION_DAYS` |
-| `data/playback.json` | Durable per-track playback state + ingest cursor (`source`) |
-| `data/jamendo_seen.json` | Permanent Jamendo ID history |
+| `.env` | `ICE_PASSWORD`, `IDLE_POLL`, `IDLE_HITS` |
+| `scripts/gestor.py` | `LOW_WATERMARK`, `BATCH_SIZE`, `MAX_DIST`, `MAX_TRACKS_PER_ARTIST` |
+| `data/playback.json` | Durable per-track state + ingest cursor |
+| `data/jamendo_seen.json` | All-time seen Jamendo IDs |
 
-### clima.json example
+### Aadam Jacobs Collection
+
+| File | Purpose |
+|---|---|
+| `radio-jacobs/clima.json` | Target genre/energy/complexity profile |
+| `radio-jacobs/.env` | `ICE_PASSWORD`, `IDLE_POLL`, `IDLE_HITS` |
+| `radio-jacobs/scripts/ia_gestor.py` | `LOW_WATERMARK` (20), `BATCH_SIZE` (120), `MAX_TRACKS_PER_SHOW` (2), `MAX_TRACK_SECONDS` (420) |
+| `radio-jacobs/data/playback.json` | Durable per-track state + collection cursor |
+| `radio-jacobs/data/archive_seen.json` | All-time seen Archive.org track IDs |
+| `radio-jacobs/data/band_genero.json` | Optional: `{"band name": ["genre"]}` to enable live genre filtering |
+
+### clima.json example (Jamendo)
 
 ```json
 {
@@ -119,59 +191,68 @@ rather than rate limited.
 }
 ```
 
-Los estilos (género) se toman del tag `genres` de Jamendo: agregá los que quieras
-como lista en `genero` (p.ej. `["folk", "indie"]`).
-
-`logs/played.tsv` se conserva durante `HISTORY_RETENTION_DAYS` (7 por defecto);
-`data/playback.json` y `data/jamendo_seen.json` son el estado anti-repetición
-permanente.
+---
 
 ## ML hook
 
-`climate_distance(song_climate, target_climate) -> float` in `gestor.py` is
-the single point of contact between the scheduling system and the climate
-model. Replace it with your model when ready — nothing else needs to change.
+`climate_distance(song_climate, target_climate) -> float` in both `gestor.py`
+and `ia_gestor.py` is the single point of contact between the scheduling system
+and the climate model. Replace it with your model when ready.
 
 Expected signature: `(dict, dict) -> float` in `[0.0, 1.0]` (0 = perfect match).
 
-The current implementation scores style distance *gradually*, not as a yes/no:
-it measures what fraction of the track's own `genero` tags falls inside the
-target `genero`, so a track tagged `["rock", "electronic"]` is penalised instead
-of scoring a perfect style match on the `rock` alone. The penalty is capped at
-`GENERO_PENALTY_CAP`. If you replace the function with a model, keep this
-property — a binary style match is what lets off-genre material through.
+`MAX_DIST` only gates new downloads in `fetch_batch`. `write_queue` uses the
+`climate_dist` stored at download time and never re-filters the existing catalog.
 
-`MAX_DIST` only gates new downloads in `fetch_batch`. `write_queue` sorts the
-existing catalog by the `climate_dist` stored at download time and never
-re-filters it, so tightening `MAX_DIST` never drops already-downloaded tracks.
+---
 
 ## File structure
 
 ```
-radio.liq            liquidsoap config
-clima.json           target climate
-songs.json           current catalog and playback flags
-queue.m3u            online playlist (rewritten automatically)
-queue.offline.m3u    archive fallback playlist
+reset.sh                      full reset / start / stop / status for both stations
+stations.json                 web panel station registry (id, mount, root)
+radio.liq                     Liquidsoap config — Jamendo Radio
+clima.json                    target climate — Jamendo Radio
+songs.json                    catalog + playback flags — Jamendo Radio
+queue.m3u / queue.offline.m3u playlists — Jamendo Radio
 data/
-  playback.json      durable playback state
-  jamendo_seen.json  all-time seen Jamendo IDs (never re-downloaded)
-archive/
-  music/             played MP3s retained for offline fallback
-logs/
-  gestor.log         download + queue cycle log
-  played.txt         web playback history
-  played.tsv         timestamped temporary playback events
-  nowplaying.txt     currently playing track
-music/               active downloaded MP3s
+  playback.json               durable state — Jamendo Radio
+  jamendo_seen.json           all-time seen IDs — Jamendo Radio
+archive/music/                played MP3s retained for offline fallback
+music/                        active downloaded MP3s — Jamendo Radio
+logs/                         gestor.log, played.tsv, nowplaying.txt — Jamendo Radio
 scripts/
-  gestor.py          core: download, climate filter, state, queues and archive
-  web_server.py      web panel + /now and /history API
-  radio.sh           start / stop / restart / status / logs
-  refresh_queue.sh   cron backup (every 30 min)
-  cleanup_logs.sh    log rotation and temporary history cleanup
+  gestor.py                   core: download, filter, state, queues
+  web_server.py               web panel + /stations /now /history API
+  radio.sh                    start / stop / restart / status / logs
+  listeners.py                icecast listener count helper
+  .env.example                environment template
+
+radio-jacobs/                 Aadam Jacobs Collection station
+  radio.liq                   Liquidsoap config
+  clima.json                  target climate
+  songs.json                  catalog + playback flags
+  queue.m3u / queue.offline.m3u
+  data/
+    playback.json             durable state + collection cursor
+    archive_seen.json         all-time seen Archive.org track IDs
+    band_genero.json          optional genre map per band
+  archive/music/              offline fallback MP3s
+  music/                      active downloaded MP3s
+  logs/                       gestor.log, played.tsv, nowplaying.txt
+  scripts/
+    ia_gestor.py              core: Archive.org ingest, filter, state, queues
+    radio-jacobs.sh           start / stop / restart / status / logs
+    listeners.py              icecast listener count helper
+  venv -> ../venv             symlink to shared Python venv (created by reset.sh)
+web/
+  index.html                  web panel UI (multi-station, English)
 ```
+
+---
 
 ## License
 
-MIT. Jamendo tracks are licensed under CC by their respective artists.
+MIT. Jamendo tracks carry their own Creative Commons licenses.  
+Aadam Jacobs Collection shows are distributed under the Live Music Archive
+permission model (public, free, non-commercial, with attribution).

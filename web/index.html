@@ -295,7 +295,9 @@
     <div id="hist"><span class="empty">—</span></div>
 
     <footer>
-      <a href="https://www.jamendo.com" target="_blank" rel="noopener">jamendo</a>
+      <a href="https://www.jamendo.com" target="_blank" rel="noopener"
+        >jamendo</a
+      >
       ·
       <a
         href="https://archive.org/details/aadamjacobs"
@@ -321,7 +323,8 @@
         </svg>
         ricmonmol</a
       >
-      · <span class="foot-note">non commercial project</span>
+      · <span class="foot-note">non commercial project</span> ·
+      <a href="mailto:rmontecinosmolina@gmail.com">contact</a>
     </footer>
 
     <script>
@@ -376,11 +379,14 @@
             );
           })
           .join("");
-        Array.prototype.forEach.call(tabsEl.querySelectorAll(".tab"), function (b) {
-          b.addEventListener("click", function () {
-            select(b.getAttribute("data-id"));
-          });
-        });
+        Array.prototype.forEach.call(
+          tabsEl.querySelectorAll(".tab"),
+          function (b) {
+            b.addEventListener("click", function () {
+              select(b.getAttribute("data-id"));
+            });
+          },
+        );
       }
 
       function select(id) {
@@ -508,11 +514,11 @@
       async function load() {
         if (!current) return;
         try {
-          var np = await fetch("/now?station=" + encodeURIComponent(current.id)).then(
-            function (r) {
-              return r.json();
-            }
-          );
+          var np = await fetch(
+            "/now?station=" + encodeURIComponent(current.id),
+          ).then(function (r) {
+            return r.json();
+          });
           var artistEl = document.getElementById("npArtist");
           var titleEl = document.getElementById("npTitle");
           if (!np || !np.title) {
@@ -547,9 +553,7 @@
         var el = document.getElementById("hist");
         try {
           var items = await fetch(
-            "/history?station=" +
-              encodeURIComponent(current.id) +
-              "&n=8"
+            "/history?station=" + encodeURIComponent(current.id) + "&n=8",
           ).then(function (r) {
             return r.json();
           });
@@ -597,10 +601,7 @@
         stations = doc.stations || [];
         var saved = localStorage.getItem("radioStation");
         current =
-          stationById(saved) ||
-          stationById(doc.default) ||
-          stations[0] ||
-          null;
+          stationById(saved) || stationById(doc.default) || stations[0] || null;
         if (!current) return;
         renderTabs();
         load();

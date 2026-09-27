@@ -507,7 +507,7 @@
         var bits = [];
         if (np.venue) bits.push(np.venue);
         if (np.recorded) bits.push(np.recorded);
-        if (np.taper) bits.push("taper: " + np.taper);
+        if (np.taper) bits.push("taped by: " + np.taper);
         npCredit.textContent = bits.length ? bits.join(" · ") : "";
       }
 
@@ -565,18 +565,16 @@
             .map(function (it) {
               var title = it.title || it.label || "?";
               var artist = it.artist ? it.artist + " — " : "";
-              var link = it.track_url
-                ? ' <a class="hist-link" href="' +
-                  esc(it.track_url) +
-                  '" target="_blank" rel="noopener">↗</a>'
-                : "";
+              var text = esc(artist + title);
+              var inner = it.track_url
+                ? '<a class="hist-link" href="' + esc(it.track_url) + '" target="_blank" rel="noopener">' + text + "</a>"
+                : text;
               return (
                 "<li>" +
                 '<span class="hist-tree">└─ </span>' +
                 '<span class="hist-text">' +
-                esc(artist + title) +
+                inner +
                 "</span>" +
-                link +
                 "</li>"
               );
             })

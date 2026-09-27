@@ -3,10 +3,10 @@
 Streaming radio with two stations sharing a single Icecast server and web
 panel:
 
-| Station | Source | Mount |
-|---|---|---|
-| **Jamendo Radio** | Jamendo API — Creative Commons tracks filtered by musical climate | `/radio` |
-| **Aadam Jacobs Collection** | Internet Archive `aadamjacobs` — live recordings (1985–2023) | `/jacobs` |
+| Station                     | Source                                                            | Mount     |
+| --------------------------- | ----------------------------------------------------------------- | --------- |
+| **Jamendo Radio**           | Jamendo API — Creative Commons tracks filtered by musical climate | `/radio`  |
+| **Aadam Jacobs Collection** | Internet Archive `aadamjacobs` — live recordings (1985–2023)      | `/jacobs` |
 
 ---
 
@@ -36,6 +36,7 @@ cp scripts/.env.example radio-jacobs/.env
 ```
 
 **Listen:**
+
 - Jacobs Collection → `http://your-server:8000/jacobs`
 - Jamendo Radio → `http://your-server:8000/radio`
 
@@ -76,11 +77,7 @@ track eligible again.
    (public, free, non-commercial with attribution). The license is emitted as
    `"permission"` in `songs.json`; attribution (venue, date, taper) travels to
    the web panel.
-4. The queue is shuffled randomly (`write_queue`). Climate distance is computed
-   but currently always passes (`IA_ENERGY` and `IA_COMPLEXITY` are fixed
-   constants matching the target). Once `data/band_genero.json` is populated
-   with real genres per band, `climate_distance` becomes a live filter.
-5. A `LOW_WATERMARK` of 20 tracks and a `BATCH_SIZE` of 120 gives ≈ 9 h of
+4. A `LOW_WATERMARK` of 20 tracks and a `BATCH_SIZE` of 120 gives ≈ 9 h of
    music in the box at all times (≈ 600 MB on disk).
 
 ---
@@ -157,24 +154,24 @@ connection.
 
 ### Jamendo Radio
 
-| File | Purpose |
-|---|---|
-| `clima.json` | Target atmosphere (mood, genre, energy, texture, voice…) |
-| `.env` | `ICE_PASSWORD`, `IDLE_POLL`, `IDLE_HITS` |
-| `scripts/gestor.py` | `LOW_WATERMARK`, `BATCH_SIZE`, `MAX_DIST`, `MAX_TRACKS_PER_ARTIST` |
-| `data/playback.json` | Durable per-track state + ingest cursor |
-| `data/jamendo_seen.json` | All-time seen Jamendo IDs |
+| File                     | Purpose                                                            |
+| ------------------------ | ------------------------------------------------------------------ |
+| `clima.json`             | Target atmosphere (mood, genre, energy, texture, voice…)           |
+| `.env`                   | `ICE_PASSWORD`, `IDLE_POLL`, `IDLE_HITS`                           |
+| `scripts/gestor.py`      | `LOW_WATERMARK`, `BATCH_SIZE`, `MAX_DIST`, `MAX_TRACKS_PER_ARTIST` |
+| `data/playback.json`     | Durable per-track state + ingest cursor                            |
+| `data/jamendo_seen.json` | All-time seen Jamendo IDs                                          |
 
 ### Aadam Jacobs Collection
 
-| File | Purpose |
-|---|---|
-| `radio-jacobs/clima.json` | Target genre/energy/complexity profile |
-| `radio-jacobs/.env` | `ICE_PASSWORD`, `IDLE_POLL`, `IDLE_HITS` |
-| `radio-jacobs/scripts/ia_gestor.py` | `LOW_WATERMARK` (20), `BATCH_SIZE` (120), `MAX_TRACKS_PER_SHOW` (2), `MAX_TRACK_SECONDS` (420) |
-| `radio-jacobs/data/playback.json` | Durable per-track state + collection cursor |
-| `radio-jacobs/data/archive_seen.json` | All-time seen Archive.org track IDs |
-| `radio-jacobs/data/band_genero.json` | Optional: `{"band name": ["genre"]}` to enable live genre filtering |
+| File                                  | Purpose                                                                                        |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `radio-jacobs/clima.json`             | Target genre/energy/complexity profile                                                         |
+| `radio-jacobs/.env`                   | `ICE_PASSWORD`, `IDLE_POLL`, `IDLE_HITS`                                                       |
+| `radio-jacobs/scripts/ia_gestor.py`   | `LOW_WATERMARK` (20), `BATCH_SIZE` (120), `MAX_TRACKS_PER_SHOW` (2), `MAX_TRACK_SECONDS` (420) |
+| `radio-jacobs/data/playback.json`     | Durable per-track state + collection cursor                                                    |
+| `radio-jacobs/data/archive_seen.json` | All-time seen Archive.org track IDs                                                            |
+| `radio-jacobs/data/band_genero.json`  | Optional: `{"band name": ["genre"]}` to enable live genre filtering                            |
 
 ### clima.json example (Jamendo)
 

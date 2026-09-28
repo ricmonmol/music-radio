@@ -382,7 +382,7 @@ class GestorQueueTests(unittest.TestCase):
 
 
 IA_MODULE_PATH = (
-    Path(__file__).resolve().parents[2] / "radio-jacobs" / "scripts" / "ia_gestor.py"
+    Path(__file__).resolve().parents[1] / "radio-jacobs" / "scripts" / "ia_gestor.py"
 )
 ia_spec = importlib.util.spec_from_file_location("ia_gestor_under_test", IA_MODULE_PATH)
 ia_gestor = importlib.util.module_from_spec(ia_spec)
@@ -426,6 +426,95 @@ class JacobsParserTests(unittest.TestCase):
         self.assertEqual(ia_gestor.parse_seconds("199.92"), 199.92)
         self.assertIsNone(ia_gestor.parse_seconds(""))
         self.assertIsNone(ia_gestor.parse_seconds(None))
+
+    def test_venue_from_album_handles_both_title_formats(self):
+        # Losshows viejos cierran con "on <fecha>" y los nuevos no. El lugar
+        # tiene que salir igual en los dos, porque metadata.venue solo existe
+        # en los viejos.
+        self.assertEqual(
+            ia_gestor.venue_from_album("Run On Live at Empty Bottle on 1996-08-10"),
+            "Empty Bottle",
+        )
+        self.assertEqual(
+            ia_gestor.venue_from_album("Azita Live at The Hideout 2015-07-24"),
+            "The Hideout",
+        )
+
+    def test_venue_from_album_survives_real_typos(self):
+        # La colección tiene "LIve at" con I mayúscula, doble espacio en
+        # "Overture  Center" y venues largos o con apóstrofo. Un regex sensible
+        # a mayúsculas dejaba el 90% del catálogo sin lugar.
+        self.assertEqual(
+            ia_gestor.venue_from_album("Hushdrops LIve at The Hideout 2015-04-11"),
+            "The Hideout",
+        )
+        self.assertEqual(
+            ia_gestor.venue_from_album(
+                "Belle & Sebastian Live at Overture  Center for the Arts on 2015-04-04"
+            ),
+            "Overture  Center for the Arts",
+        )
+        self.assertEqual(
+            ia_gestor.venue_from_album(
+                "Cheer-Accident with Lovely Little Girls Live at Martyrs' 2015-06-19"
+            ),
+            "Martyrs'",
+        )
+        self.assertEqual(
+            ia_gestor.venue_from_album(
+                "Friends of the Gamelan Live at Jay Pritzker Pavilion - Millennium Park 2013-07-11"
+            ),
+            "Jay Pritzker Pavilion - Millennium Park",
+        )
+
+    def test_venue_from_album_is_empty_without_the_pattern(self):
+        for album in ("", "show", "Freakons Live at The Hideout", None):
+            self.assertEqual(ia_gestor.venue_from_album(album), "")
+
+    def test_tracks_of_falls_back_to_album_for_venue(self):
+        """Sin metadata.venue, el lugar sale del título del show."""
+        doc = {
+            "metadata": {
+                "title": "Run On Live at Empty Bottle on 1996-08-10",
+                "creator": "Run On",
+                "date": "1996-08-10",
+                "description": "01 glad",
+            },
+            "files": [
+                {
+                    "name": "01 glad.mp3",
+                    "source": "derivative",
+                    "length": "1:23",
+                    "track": "1",
+                    "title": "glad",
+                }
+            ],
+        }
+        track = ia_gestor.tracks_of(doc, "ajc00026_runon_1996-08-10")[0]
+        self.assertEqual(track["venue"], "Empty Bottle")
+
+    def test_tracks_of_prefers_metadata_venue_over_album(self):
+        """Si el ítem viejo trae el campo, manda él y no el título."""
+        doc = {
+            "metadata": {
+                "title": "Run On Live at Empty Bottle on 1996-08-10",
+                "creator": "Run On",
+                "date": "1996-08-10",
+                "venue": "Empty Bottle (backstage)",
+                "description": "01 glad",
+            },
+            "files": [
+                {
+                    "name": "01 glad.mp3",
+                    "source": "derivative",
+                    "length": "1:23",
+                    "track": "1",
+                    "title": "glad",
+                }
+            ],
+        }
+        track = ia_gestor.tracks_of(doc, "ajc00026_runon_1996-08-10")[0]
+        self.assertEqual(track["venue"], "Empty Bottle (backstage)")
 
     def test_license_of_etree_item_is_permission(self):
         meta = {"collection": ["aadamjacobs", "etree"]}
@@ -555,7 +644,7 @@ class JacobsParserTests(unittest.TestCase):
 
     def test_stations_config_resolves_both_roots(self):
         stations, default_id = web_server.load_stations()
-        self.assertEqual(default_id, "algoritmica")
+        self.assertEqual(default_id, "jacobs")
         by_id = {st["id"]: st for st in stations}
         self.assertEqual(sorted(by_id), ["algoritmica", "jacobs"])
         for st in stations:

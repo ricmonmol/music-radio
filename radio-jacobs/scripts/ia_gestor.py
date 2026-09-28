@@ -598,13 +598,32 @@ def parse_setlist(description: str) -> dict:
     return titles
 
 
-def parse_credits(description: str) -> dict:
-    """Saca lugar y grabador del texto de description.
+VENUE_IN_ALBUM_RE = re.compile(
+    r"\blive at (.+?)(?:\s+on)?\s+\d{4}-\d{2}-\d{2}\s*$", re.IGNORECASE)
 
-    Los ítems viejos traen metadata.venue y metadata.taper, pero los más
-    recientes no: esos puts solo el lugar y "Recorded by:" dentro del HTML de
-    la description. Sin este fallback el crédito visible de lugar/grabador
-    saldría vacío justo en los shows más recientes.
+
+def venue_from_album(album: str) -> str:
+    """Saca el lugar del título del show, que es el único que trae la AJC.
+
+    Solo 21 de los ítems viejos traen metadata.venue, y ningún show nuevo la
+    trae. Pero el título del ítem siempre lo dice: "Run On Live at Empty
+    Bottle on 1996-08-10" o, sin el "on", "Azita Live at The Hideout
+    2015-07-24". También hay erratas ("LIve at") y espacios dobles
+    ("Overture  Center"), así que el patrón va con IGNORECASE y grupo perezoso
+    antes de la fecha.
+    """
+    match = VENUE_IN_ALBUM_RE.search(album or "")
+    return _clean(match.group(1)) if match else ""
+
+
+def parse_credits(description: str) -> dict:
+    """Saca el grabador del texto de description.
+
+    Los ítems viejos traen metadata.taper, pero los más recientes no: esos
+    puts solo "Recorded by:" dentro del HTML de la description. Sin este
+    fallback el crédito visible del grabador saldría vacío justo en los shows
+    más recientes. El lugar no sale de acá sino del título del show, vía
+    venue_from_album().
     """
     lines = description_lines(description)
     out: dict = {}
@@ -676,7 +695,8 @@ def tracks_of(doc: dict, identifier: str) -> list[dict]:
     credits = parse_credits(description)
     album = _clean(str(meta.get("title") or "show"))
     artist = item_creator(meta)
-    venue = _clean(str(meta.get("venue") or "")) or credits.get("venue") or ""
+    venue = _clean(str(meta.get("venue") or "")) or credits.get("venue") \
+        or venue_from_album(album)
     date = str(meta.get("date") or "")
     taper = _clean(str(meta.get("taper") or "")) or credits.get("taper") or "Aadam Jacobs"
     out = []
@@ -799,6 +819,35 @@ def load_seen() -> set:
 
 def save_seen(seen: set):
     save_json(SEEN_PATH, sorted(seen))
+
+
+def backfill_venue() -> int:
+    """Rellena attribution.venue de las canciones que lo tienen vacío.
+
+    El lugar se deriva del título del show, que siempre lo trae, así que
+    no hace falta volver a pegarle al API de archive.org. Solo escribe en las
+    entradas vacías: es idempotente y no pisa un venue que ya venía de
+    metadata.venue. Se llama una vez con --backfill-venue y devuelve cuántas
+    entradas corrigió.
+    """
+    songs = load_songs()
+    changed = 0
+    for song in songs:
+        if not isinstance(song, dict):
+            continue
+        att = song.get("attribution")
+        if not isinstance(att, dict):
+            att = {}
+            song["attribution"] = att
+        if str(att.get("venue") or "").strip():
+            continue
+        venue = venue_from_album(str(song.get("album") or ""))
+        if venue:
+            att["venue"] = venue
+            changed += 1
+    if changed:
+        save_songs(songs)
+    return changed
 
 
 # ── historial de reproducción ─────────────────────────────────────────────────
@@ -1478,6 +1527,7 @@ def main():
     ap.add_argument("--status", action="store_true", help="mostrar estado y salir")
     ap.add_argument("--mark-played", metavar="PATH", help="marcar una pista como iniciada")
     ap.add_argument("--cleanup-history", action="store_true", help="limpiar eventos temporales")
+    ap.add_argument("--backfill-venue", action="store_true", help="rellenar el lugar de las canciones que lo tienen vacío")
     ap.add_argument("--batch-size", type=int, default=BATCH_SIZE, help=f"canciones a descargar por lote (default {BATCH_SIZE})")
     ap.add_argument("--low-watermark", type=int, default=LOW_WATERMARK, help=f"umbral de cola para disparar descarga (default {LOW_WATERMARK})")
     ap.add_argument("--max-dist", type=float, default=MAX_DIST, help=f"distancia de clima máxima (default {MAX_DIST})")
@@ -1494,6 +1544,11 @@ def main():
             cleanup_playback_events()
         finally:
             cleanup_lock.close()
+        return 0
+
+    if args.backfill_venue:
+        changed = backfill_venue()
+        print(f"Lugares rellenados: {changed}")
         return 0
 
     if args.status:

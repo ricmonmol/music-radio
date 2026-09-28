@@ -49,6 +49,21 @@ _own_gestor_pids() {
     pgrep -f "python.*${GESTOR}" 2>/dev/null || true
 }
 
+# El panel web es compartido: lo levanta scripts/radio.sh. Si esa estación está
+# apagada, el panel queda caído aunque esta radio suene bien. Se verifica
+# primero y solo se levanta si no responde: arrancar dos web_server.py a la vez
+# sería un choque de puerto en el 8080.
+_ensure_web() {
+    if curl -s -o /dev/null --max-time 2 "http://localhost:8080/" 2>/dev/null; then
+        return 0
+    fi
+    echo "→ Panel web caído; levantándolo (compartido)..."
+    mkdir -p ../logs
+    setsid nohup $PYTHON ../scripts/web_server.py --host 0.0.0.0 \
+        >> ../logs/web.out 2>&1 < /dev/null &
+    sleep 1
+}
+
 _stop() {
     local pid
     pid=$(_own_liquidsoap_pid)
@@ -98,6 +113,8 @@ _start() {
     # y la playlist se recarga sola cuando el gestor termina de escribir.
     echo "→ Renovando colas en segundo plano..."
     setsid nohup $PYTHON "$GESTOR" >> logs/gestor.log 2>&1 < /dev/null &
+
+    _ensure_web
 
     sleep 4
     echo ""

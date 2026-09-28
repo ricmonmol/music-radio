@@ -29,9 +29,14 @@ def fetch():
     with urllib.request.urlopen(STATUS_URL, timeout=TIMEOUT) as r:
         data = json.load(r)
 
+    # Con un solo mount activo icecast devuelve source como dict (la propia
+    # source), no como lista. Con varios mounts devuelve una lista de dicts.
+    # Interpretar el dict como mapa de sources rompía fetch() con un
+    # AttributeError, y el except global devolvía 0 oyentes: el gate de
+    # radio.liq pausaba la radio para siempre aunque hubiera gente escuchando.
     sources = data["icestats"]["source"]
     if isinstance(sources, dict):
-        sources = list(sources.values())
+        sources = [sources]
 
     rows = []
     for entry in sources:

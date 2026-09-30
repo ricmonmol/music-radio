@@ -94,6 +94,17 @@ tests() {
 
 procesos() { ps aux | grep -E '[l]iquidsoap|[w]eb_server|[g]estor'; }
 
+# ── registro de visitas ───────────────────────────────────────────────────────
+# Salen del access.log de icecast, no de ningún log propio: 404 = mount caído
+# y se queda fuera salvo que se pida --errors. visits.py ya imprime el título.
+
+visits_dia()     { $PY scripts/visits.py --days 30; }
+visits_semana()  { $PY scripts/visits.py --days 7; }
+visits_detalle() { $PY scripts/visits.py --visits --days 3 --limit 25; }
+visits_fallos()  { $PY scripts/visits.py --daily --days 30 --errors; }
+visits_todo()    { $PY scripts/visits.py --days 0; }
+visits_volcar()  { $PY scripts/visits.py --snapshot; }
+
 # ── el menú ───────────────────────────────────────────────────────────────────
 # Cada opción es "etiqueta|comando". Las que empiezan con @ son títulos, no
 # se numeran. El comando se evalúa en este shell, así que también puede ser el
@@ -120,13 +131,22 @@ opciones=(
 "Estado|cd $JAC && ./scripts/radio-jacobs.sh status"
 "Ver logs|logs_jacobs"
 
-"@DIAGNÓSTICO"
-"Oyentes por mount|./scripts/listeners.sh"
-"Procesos vivos|procesos"
-"Crontab (lo que corre solo)|crontab -l"
-"Tests del gestor|tests"
+    "@DIAGNÓSTICO"
+    "Lista de scripts del proyecto|./indice.sh"
+    "Oyentes por mount|./scripts/listeners.sh"
+    "Procesos vivos|procesos"
+    "Crontab (lo que corre solo)|crontab -l"
+    "Tests del gestor|tests"
 
-"@MANTENIMIENTO"
+    "@VISITAS — registro de oyentes"
+    "Resumen por día (30 d)|visits_dia"
+    "Resumen última semana|visits_semana"
+    "Detalle de visitas (3 d)|visits_detalle"
+    "Contando también mount caído|visits_fallos"
+    "Todo el histórico|visits_todo"
+    "Volcar ahora (lo hace el cron)|visits_volcar"
+
+    "@MANTENIMIENTO"
 "Forzar descarga Jamendo|enbg_jamendo"
 "Estado gestor Jamendo|./$PY scripts/gestor.py --status"
 "Forzar descarga Jacobs|enbg_jacobs"

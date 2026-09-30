@@ -14,6 +14,13 @@ fi
 
 ./venv/bin/python scripts/gestor.py --cleanup-history
 
+# Volcar el registro de visitas antes de que icecast rotte su access.log. Sin
+# esto el histórico vivo son ~6 días: el log de icecast se llena de ruido del
+# gate de oyentes (1,8 MB/día) y se borra al llegar a 10 MB. El snapshot se
+# reescribe cada día y es idempotente, así que correrlo de más no hace daño.
+./venv/bin/python scripts/visits.py --snapshot || \
+    echo "$(date -Is) visits: falló el snapshot, se conserva lo anterior" >> "$LOG_DIR/rotation.log"
+
 # Rotar logs grandes: liquidsoap.out, select.log, web.out, catalog.log
 for f in liquidsoap.out select.log web.out catalog.log; do
     path="$LOG_DIR/$f"

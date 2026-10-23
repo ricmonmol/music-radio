@@ -326,27 +326,47 @@ def make_handler(stations, default_id, web_dir):
             cache = caches[station["id"]]
             out = []
             last_seen = None
-            for line in reversed(played.read_text(encoding="utf-8",
-                                                  errors="replace").splitlines()):
-                line = line.strip()
-                if not line:
-                    continue
-                fname = line.split("|", 1)[0].strip()
-                # el historial muestra las ANTERIORES: se omite la que suena ahora
-                if current and fname == current:
-                    continue
-                # colapsar duplicados consecutivos (restos del doble on_track)
-                if fname == last_seen:
-                    continue
-                last_seen = fname
-                song = cache.get_by_fname(fname)
-                if song is not None:
-                    out.append(public(song))
-                else:
-                    # Canción rotada — parsear del label
-                    out.append(self._label_fallback(line))
-                if len(out) >= n:
-                    break
+
+            # No leer el archivo entero: colapsar por bloques desde el final.
+            # played.txt puede crecer con el tiempo; también evita contorsiones
+            # con archivos muy grandes.
+            try:
+                with played.open("r", encoding="utf-8", errors="replace") as fh:
+                    fh.seek(0, 2)
+                    end = fh.tell()
+                    chunk = 8192
+                    buf = ""
+                    while end > 0 and len(out) < n:
+                        read_size = min(chunk, end)
+                        end -= read_size
+                        fh.seek(end)
+                        buf = fh.read(read_size) + buf
+                        lines = buf.splitlines()
+                        if end > 0 and lines:
+                            buf = lines.pop() or ""
+                        for line in reversed(lines):
+                            line = line.strip()
+                            if not line:
+                                continue
+                            fname = line.split("|", 1)[0].strip()
+                            if "\x00" in fname:
+                                fname = re.sub(r"[\x00-\x1f\x7f]", "", fname).strip()
+                            if not fname:
+                                continue
+                            if current and fname == current:
+                                continue
+                            if fname == last_seen:
+                                continue
+                            last_seen = fname
+                            song = cache.get_by_fname(fname)
+                            if song is not None:
+                                out.append(public(song))
+                            else:
+                                out.append(self._label_fallback(line))
+                            if len(out) >= n:
+                                break
+            except OSError:
+                return []
             return out
 
     return Handler

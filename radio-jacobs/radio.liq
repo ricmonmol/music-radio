@@ -53,12 +53,12 @@ def handle_track(m) =
         process.quote(fname) ^ " >/dev/null 2>&1 &"
       )
     ))
-    # El gestor completo puede tardar ~37 min descargando un lote de 120 pistas.
-    # Se lanza con sh -c '... &' para que la shell haga el fork real y
-    # process.run retorne inmediatamente sin bloquear el stream.
+    # El ciclo completo (descarga, archivado, colas) solo corre si la cola
+    # está baja. La descarga puede tardar ~37 min; el lock del gestor y el
+    # cooldown del trigger evitan lanzar otra instancia en cada tema.
     ignore(process.run(
       "sh -c " ^ process.quote(
-        "./venv/bin/python scripts/ia_gestor.py >> logs/gestor.log 2>&1 &"
+        "scripts/gestor_trigger.sh >/dev/null 2>&1 &"
       )
     ))
   end

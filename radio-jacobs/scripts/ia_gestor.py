@@ -35,10 +35,10 @@ import fcntl
 import html
 import json
 import os
-import random
 import re
 import shutil
 import sys
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -60,6 +60,7 @@ MUSIC_DIR    = ROOT / "music"
 ARCHIVE_DIR  = ROOT / "archive" / "music"
 LOG_PATH     = ROOT / "logs" / "gestor.log"
 BAND_GENERO  = ROOT / "data" / "band_genero.json"
+BAND_WEIGHTS = ROOT / "data" / "band_weights.json"
 LOCK_PATH    = ROOT / "data" / "gestor.lock"
 
 # ── parámetros ────────────────────────────────────────────────────────────────
@@ -210,33 +211,25 @@ def write_playlist(path, text):
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     payload = text.encode("utf-8")
+
+    fd, tmpname = tempfile.mkstemp(prefix=p.name + ".tmp.", dir=str(p.parent))
     try:
-        old_size = p.stat().st_size
-    except OSError:
-        old_size = 0
-    if old_size > len(payload):
-        padding_size = old_size - len(payload)
-        if padding_size == 1:
-            padding = b"#"
-        elif padding_size == 2:
-            padding = b"#\n"
-        else:
-            padding = b"# " + b" " * (padding_size - 3) + b"\n"
-    else:
-        padding = b""
-    data = payload + padding
-    fd = os.open(p, os.O_WRONLY | os.O_CREAT, 0o644)
-    try:
-        os.lseek(fd, 0, os.SEEK_SET)
-        view = memoryview(data)
-        while view:
-            written = os.write(fd, view)
-            if written <= 0:
-                raise OSError("no se pudo escribir la playlist")
-            view = view[written:]
-        os.fsync(fd)
-    finally:
         os.close(fd)
+        with open(tmpname, "wb") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            os.chmod(tmpname, 0o644)
+        except OSError:
+            pass
+        os.replace(tmpname, p)
+    finally:
+        try:
+            if os.path.exists(tmpname):
+                os.unlink(tmpname)
+        except OSError:
+            pass
 
 
 def now_iso() -> str:
@@ -433,13 +426,36 @@ def climate_distance(song_climate: dict, target_climate: dict) -> float:
 
 
 def _band_key(name: str) -> str:
-    """Normaliza el nombre de la banda para buscar en data/band_genero.json."""
-    return re.sub(r"[^a-z0-9]+", " ", (name or "").lower()).strip()
+    """Normaliza el nombre de la banda para buscar en datos de curación."""
+    s = (name or "").lower()
+    # quitar prefijos comunes y normalizar
+    s = re.sub(r"^(the|los|la|el|les)\s+", "", s)
+    s = re.sub(r"[^a-z0-9]+", " ", s).strip()
+    # aliases sencillos
+    aliases = {
+        "bj rk": "bjork",
+        "rejjie watts": "reggie watts",
+    }
+    return aliases.get(s, s)
 
 
 def load_band_genero() -> dict:
     data = load_json(BAND_GENERO, {})
     return data if isinstance(data, dict) else {}
+
+
+def load_band_weights() -> dict:
+    data = load_json(BAND_WEIGHTS, {})
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    for k, v in data.items():
+        kk = _band_key(k)
+        try:
+            out[kk] = float(v)
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 def climate_from_ia(meta: dict) -> dict:
@@ -1002,6 +1018,11 @@ def adopt_archive(songs: list, state: dict) -> tuple[bool, set[str]]:
     return changed, seen
 
 
+def clean_played_value(value) -> str:
+    """Sanea una línea de historial (bytes de control / NUL de tags rotos)."""
+    return re.sub(r"[\x00-\x1f\x7f]", "", str(value or "")).strip()
+
+
 def consume_played(songs: list, state: dict) -> int:
     values = []
     timestamps = {}
@@ -1011,21 +1032,26 @@ def consume_played(songs: list, state: dict) -> int:
             if not line.strip():
                 continue
             raw_timestamp, separator, value = line.partition("|")
-            if not separator or not value.strip():
+            if not separator:
                 continue
-            value = value.strip()
+            value = clean_played_value(value)
+            if not value:
+                continue
             values.append(value)
             timestamps[path_identity(value)] = raw_timestamp.strip()
 
     legacy = Path(PLAYED_PATH)
     if legacy.exists():
         values.extend(
-            line.split("|", 1)[0].strip()
-            for line in legacy.read_text(encoding="utf-8", errors="replace").splitlines()
-            if line.strip()
+            value
+            for value in (
+                clean_played_value(line.split("|", 1)[0])
+                for line in legacy.read_text(encoding="utf-8", errors="replace").splitlines()
+            )
+            if value
         )
 
-    current = get_nowplaying_path()
+    current = clean_played_value(get_nowplaying_path())
     if current:
         values.append(current)
 
@@ -1450,18 +1476,80 @@ def write_queue(songs: list, target_climate: dict, exclude_paths: set[str] | Non
         seen_keys.add(key)
         pool.append(song)
 
-    # Orden al azar. La libretita ya garantiza que no se repita una canción, y
-    # como el clima no discrimina (ver climate_from_ia), ordenar por distancia
-    # solo daba la falsa sensación de un criterio. La ventana de recent_artists
-    # también sobra: obligaba a partir los shows en trozos, que es justo lo
-    # contrario de lo que se pidió.
-    random.shuffle(pool)
+    weights = load_band_weights()
 
-    text = render_queue(pool)
+    def band_weight(song):
+        w = weights.get(_band_key(song.get("artist")), 1.0)
+        try:
+            return float(w)
+        except (TypeError, ValueError):
+            return 1.0
+
+    # Selección ponderada sin reemplazo favoreciendo bandas conocidas, con
+    # cupo por artista para no saturar la cola con una sola banda.
+    import random
+
+    # Orden estable por defecto; usar pesos si hay curación.
+    if not weights:
+        by_identity = {path_identity(song_file(song)): song for song in pool}
+        ordered = []
+        for identity in queue_paths(QUEUE_PATH):
+            song = by_identity.pop(identity, None)
+            if song is not None:
+                ordered.append(song)
+        ordered.extend(song for song in pool if path_identity(song_file(song)) in by_identity)
+    else:
+        items = list(pool)
+        ordered = []
+        recent_counts = {}
+        max_per_artist = 4
+        window = 12
+        while items:
+            # recalcular pesos con penalización si artista ya aparece mucho
+            candidates = []
+            for song in items:
+                artist = _band_key(song.get("artist"))
+                c = sum(1 for s in ordered[-window:] if _band_key(s.get("artist")) == artist)
+                penalty = 1.0 / (1.0 + c)
+                if recent_counts.get(artist, 0) >= max_per_artist:
+                    continue
+                w = band_weight(song) * penalty
+                candidates.append((max(w, 0.01), song))
+            if not candidates:
+                break
+            total = sum(w for w, _ in candidates)
+            r = random.random() * total
+            acc = 0.0
+            chosen = None
+            for w, song in candidates:
+                acc += w
+                if r <= acc:
+                    chosen = song
+                    break
+            if chosen is None:
+                chosen = candidates[-1][1]
+            ordered.append(chosen)
+            items.remove(chosen)
+            artist = _band_key(chosen.get("artist"))
+            recent_counts[artist] = recent_counts.get(artist, 0) + 1
+
+        # mantener las primeras que ya estaban en cola si siguen válidas
+        existing = {path_identity(song_file(s)): s for s in ordered}
+        new_order = []
+        for identity in queue_paths(QUEUE_PATH):
+            s = existing.get(identity)
+            if s is not None:
+                new_order.append(s)
+        for s in ordered:
+            if path_identity(song_file(s)) not in {path_identity(song_file(x)) for x in new_order}:
+                new_order.append(s)
+        ordered = new_order
+
+    text = render_queue(ordered)
     changed = playlist_needs_update(QUEUE_PATH, text)
     if changed:
         write_playlist(QUEUE_PATH, text)
-    return len(pool), changed
+    return len(ordered), changed
 
 
 def offline_sort_key(song: dict, state: dict):

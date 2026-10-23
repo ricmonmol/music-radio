@@ -27,6 +27,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -187,33 +188,28 @@ def write_playlist(path, text):
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     payload = text.encode("utf-8")
+
+    # Escritura atómica: escribir a un archivo temporal en el mismo
+    # directorio y renombrar con os.replace(). Así Liquidsoap (reload_mode="watch")
+    # ve un archivo completo en lugar de lecturas parciales.
+    fd, tmpname = tempfile.mkstemp(prefix=p.name + ".tmp.", dir=str(p.parent))
     try:
-        old_size = p.stat().st_size
-    except OSError:
-        old_size = 0
-    if old_size > len(payload):
-        padding_size = old_size - len(payload)
-        if padding_size == 1:
-            padding = b"#"
-        elif padding_size == 2:
-            padding = b"#\n"
-        else:
-            padding = b"# " + b" " * (padding_size - 3) + b"\n"
-    else:
-        padding = b""
-    data = payload + padding
-    fd = os.open(p, os.O_WRONLY | os.O_CREAT, 0o644)
-    try:
-        os.lseek(fd, 0, os.SEEK_SET)
-        view = memoryview(data)
-        while view:
-            written = os.write(fd, view)
-            if written <= 0:
-                raise OSError("no se pudo escribir la playlist")
-            view = view[written:]
-        os.fsync(fd)
-    finally:
         os.close(fd)
+        with open(tmpname, "wb") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            os.chmod(tmpname, 0o644)
+        except OSError:
+            pass
+        os.replace(tmpname, p)
+    finally:
+        try:
+            if os.path.exists(tmpname):
+                os.unlink(tmpname)
+        except OSError:
+            pass
 
 
 def now_iso() -> str:
@@ -242,8 +238,13 @@ def path_string(path) -> str:
 def path_identity(value) -> str:
     try:
         return str(path_from_value(value).resolve())
-    except OSError:
-        return str(path_from_value(value))
+    except (OSError, ValueError):
+        # ValueError: un byte nulo (metadato corrupto en played.txt) hace
+        # explotar Path.resolve() y tumbaba el ciclo entero.
+        try:
+            return str(path_from_value(value))
+        except (OSError, ValueError):
+            return str(value or "")
 
 
 def track_key(value) -> str:
@@ -692,6 +693,16 @@ def adopt_archive(songs: list, state: dict) -> tuple[bool, set[str]]:
     return changed, seen
 
 
+def clean_played_value(value) -> str:
+    """Sanea una línea de historial.
+
+    Liquidsoap escribe el label crudo del mp3. Un tag con encoding roto puede
+    dejar bytes de control (NUL incluido) en played.txt; Path.resolve() levanta
+    ValueError con un NUL y antes tumbaba todo el ciclo del gestor.
+    """
+    return re.sub(r"[\x00-\x1f\x7f]", "", str(value or "")).strip()
+
+
 def consume_played(songs: list, state: dict) -> int:
     values = []
     timestamps = {}
@@ -701,21 +712,26 @@ def consume_played(songs: list, state: dict) -> int:
             if not line.strip():
                 continue
             raw_timestamp, separator, value = line.partition("|")
-            if not separator or not value.strip():
+            if not separator:
                 continue
-            value = value.strip()
+            value = clean_played_value(value)
+            if not value:
+                continue
             values.append(value)
             timestamps[path_identity(value)] = raw_timestamp.strip()
 
     legacy = Path(PLAYED_PATH)
     if legacy.exists():
         values.extend(
-            line.split("|", 1)[0].strip()
-            for line in legacy.read_text(encoding="utf-8", errors="replace").splitlines()
-            if line.strip()
+            value
+            for value in (
+                clean_played_value(line.split("|", 1)[0])
+                for line in legacy.read_text(encoding="utf-8", errors="replace").splitlines()
+            )
+            if value
         )
 
-    current = get_nowplaying_path()
+    current = clean_played_value(get_nowplaying_path())
     if current:
         values.append(current)
 
@@ -1064,15 +1080,26 @@ def write_queue(songs: list, target_climate: dict, exclude_paths: set[str] | Non
         return dist if dist is not None else 0.5
 
     pool.sort(key=sort_key)
+
+    # Conservar el orden de las pistas que ya están en la cola y agregar las
+    # nuevas al final. Reescribir/barajar la cola en cada ciclo hace que
+    # Liquidsoap (reload_mode="watch") recargue el archivo todo el tiempo.
+    by_identity = {path_identity(song_file(song)): song for song in pool}
     ordered = []
-    recent_artists = []
-    while pool:
+    for identity in queue_paths(QUEUE_PATH):
+        song = by_identity.pop(identity, None)
+        if song is not None:
+            ordered.append(song)
+
+    remaining = [song for song in pool if path_identity(song_file(song)) in by_identity]
+    recent_artists = [song.get("artist", "") for song in ordered[-4:]]
+    while remaining:
         window = set(recent_artists[-4:])
         chosen_index = next(
-            (i for i, song in enumerate(pool) if song.get("artist") not in window),
+            (i for i, song in enumerate(remaining) if song.get("artist") not in window),
             0,
         )
-        chosen = pool.pop(chosen_index)
+        chosen = remaining.pop(chosen_index)
         ordered.append(chosen)
         recent_artists.append(chosen.get("artist", ""))
 

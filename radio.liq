@@ -45,12 +45,19 @@ def handle_track(m) =
     last_fname := fname
     file.write(data=(fname ^ "|" ^ artist ^ " — " ^ title), nowplaying_file)
     file.write(data=(fname ^ "|" ^ artist ^ " — " ^ title ^ "\n"), append=true, played_file)
+    # --mark-played en background: no bloquear el hilo de audio.
     ignore(process.run(
-      "./venv/bin/python scripts/gestor.py --mark-played " ^ process.quote(fname) ^
-      " >/dev/null 2>&1"
+      "sh -c " ^ process.quote(
+        "./venv/bin/python scripts/gestor.py --mark-played " ^
+        process.quote(fname) ^ " >/dev/null 2>&1 &"
+      )
     ))
+    # El ciclo completo (descarga, archivado, colas) solo corre si la cola
+    # está baja. Antes se lanzaba uno por tema y reescribía todo el estado.
     ignore(process.run(
-      "./venv/bin/python scripts/gestor.py >> logs/gestor.log 2>&1 &"
+      "sh -c " ^ process.quote(
+        "scripts/gestor_trigger.sh >/dev/null 2>&1 &"
+      )
     ))
   end
 end

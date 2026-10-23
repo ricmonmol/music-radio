@@ -217,7 +217,9 @@ class GestorQueueTests(unittest.TestCase):
 
         gestor.write_playlist(path, "#EXTM3U\n/new.mp3\n")
 
-        self.assertEqual(os.stat(path).st_ino, inode)
+        # Con escritura atómica (os.replace) el inodo cambia, pero el contenido
+        # debe quedar correctamente escrito y sin relleno.
+        self.assertNotEqual(os.stat(path).st_ino, inode)
         self.assertEqual(gestor.queue_paths(path), [gestor.path_identity("/new.mp3")])
         self.assertFalse(gestor.playlist_needs_update(path, "#EXTM3U\n/new.mp3\n"))
 

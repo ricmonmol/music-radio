@@ -33,6 +33,14 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+import sys
+from pathlib import Path as _P
+_QO = _P(__file__).resolve()
+for _d in (_QO.parent, _QO.parent.parent.parent / "scripts"):
+    if (_d / "queue_order.py").exists():
+        sys.path.insert(0, str(_d))
+        break
+from queue_order import spread_artists, count_adjacent  # noqa: E402
 
 # ── rutas ─────────────────────────────────────────────────────────────────────
 ROOT         = Path(__file__).resolve().parent.parent
@@ -1092,16 +1100,10 @@ def write_queue(songs: list, target_climate: dict, exclude_paths: set[str] | Non
             ordered.append(song)
 
     remaining = [song for song in pool if path_identity(song_file(song)) in by_identity]
-    recent_artists = [song.get("artist", "") for song in ordered[-4:]]
-    while remaining:
-        window = set(recent_artists[-4:])
-        chosen_index = next(
-            (i for i, song in enumerate(remaining) if song.get("artist") not in window),
-            0,
-        )
-        chosen = remaining.pop(chosen_index)
-        ordered.append(chosen)
-        recent_artists.append(chosen.get("artist", ""))
+    window = int(os.environ.get("ARTIST_WINDOW", "4"))
+    ordered.extend(spread_artists(remaining, window=window,
+                                  recent=[song.get("artist", "") for song in ordered[-window:]]))
+    log(f"cola online: {len(ordered)} temas, {count_adjacent(ordered)} artistas adyacentes")
 
     text = render_queue(ordered)
     changed = playlist_needs_update(QUEUE_PATH, text)
@@ -1139,6 +1141,8 @@ def write_offline_queue(songs: list, state: dict, exclude_paths: set[str] | None
 
     ordered = sorted(candidates.values(), key=lambda song: offline_sort_key(song, state))
     ordered = ordered[:OFFLINE_QUEUE_SIZE]
+    ordered = spread_artists(ordered, window=int(os.environ.get("ARTIST_WINDOW", "4")))
+    log(f"cola offline: {len(ordered)} temas, {count_adjacent(ordered)} artistas adyacentes")
     text = render_queue(ordered)
     changed = playlist_needs_update(OFFLINE_QUEUE_PATH, text)
     if changed:

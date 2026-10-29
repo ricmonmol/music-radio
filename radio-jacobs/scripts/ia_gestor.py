@@ -44,6 +44,14 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+import sys
+from pathlib import Path as _P
+_QO = _P(__file__).resolve()
+for _d in (_QO.parent, _QO.parent.parent.parent / "scripts"):
+    if (_d / "queue_order.py").exists():
+        sys.path.insert(0, str(_d))
+        break
+from queue_order import spread_artists, count_adjacent  # noqa: E402
 
 # ── rutas ─────────────────────────────────────────────────────────────────────
 ROOT         = Path(__file__).resolve().parent.parent
@@ -1545,6 +1553,9 @@ def write_queue(songs: list, target_climate: dict, exclude_paths: set[str] | Non
                 new_order.append(s)
         ordered = new_order
 
+    # Separar artistas de forma estable (el prefijo ya separado no se mueve).
+    ordered = spread_artists(ordered, window=int(os.environ.get("ARTIST_WINDOW", "6")))
+    log(f"cola online: {len(ordered)} temas, {count_adjacent(ordered)} artistas adyacentes")
     text = render_queue(ordered)
     changed = playlist_needs_update(QUEUE_PATH, text)
     if changed:
@@ -1581,6 +1592,8 @@ def write_offline_queue(songs: list, state: dict, exclude_paths: set[str] | None
 
     ordered = sorted(candidates.values(), key=lambda song: offline_sort_key(song, state))
     ordered = ordered[:OFFLINE_QUEUE_SIZE]
+    ordered = spread_artists(ordered, window=int(os.environ.get("ARTIST_WINDOW", "4")))
+    log(f"cola offline: {len(ordered)} temas, {count_adjacent(ordered)} artistas adyacentes")
     text = render_queue(ordered)
     changed = playlist_needs_update(OFFLINE_QUEUE_PATH, text)
     if changed:

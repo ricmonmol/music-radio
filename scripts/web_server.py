@@ -203,6 +203,9 @@ def make_handler(stations, default_id, web_dir):
             up = None
             try:
                 up = socket.create_connection(("127.0.0.1", 8000), timeout=10)
+                # Timeout por operación: un cliente colgado no retiene el hilo.
+                up.settimeout(30)
+                self.connection.settimeout(30)
             except OSError:
                 self.send_error(503, "Icecast no disponible")
                 return
@@ -271,6 +274,9 @@ def make_handler(stations, default_id, web_dir):
                         break
                     self.wfile.write(data)
                     self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, socket.timeout):
+                # El oyente cerró la pestaña o se colgó: es normal, sin traceback.
+                self.close_connection = True
             finally:
                 up.close()
 

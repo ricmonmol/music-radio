@@ -87,10 +87,16 @@ _start() {
     echo "$!" > "$PIDFILE"
     echo "  liquidsoap PID $!"
 
-    echo "→ Arrancando web server..."
-    setsid nohup $PYTHON scripts/web_server.py --host 0.0.0.0 \
-        >> logs/web.out 2>&1 < /dev/null &
-    echo "  web server PID $!"
+    # El web server es compartido entre estaciones: si ya está corriendo
+    # (otra estación lo levantó), no arrancar un segundo -> "Address in use".
+    if pgrep -f "python.*scripts/web_server.py" > /dev/null 2>&1; then
+        echo "→ Web server ya está corriendo, no se relanza"
+    else
+        echo "→ Arrancando web server..."
+        setsid nohup $PYTHON scripts/web_server.py --host 0.0.0.0 \
+            >> logs/web.out 2>&1 < /dev/null &
+        echo "  web server PID $!"
+    fi
 
     # La renovación de colas sigue en segundo plano: el stream ya está en vivo
     # y la playlist se recarga sola cuando el gestor termina de escribir.

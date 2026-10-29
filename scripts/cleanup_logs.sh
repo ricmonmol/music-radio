@@ -21,8 +21,9 @@ fi
 ./venv/bin/python scripts/visits.py --snapshot || \
     echo "$(date -Is) visits: falló el snapshot, se conserva lo anterior" >> "$LOG_DIR/rotation.log"
 
-# Rotar logs grandes: liquidsoap.out, select.log, web.out, catalog.log
-for f in liquidsoap.out select.log web.out catalog.log; do
+# Rotar logs grandes: liquidsoap.out, select.log, web.out, catalog.log,
+# gestor.log, listeners.log
+for f in liquidsoap.out select.log web.out catalog.log gestor.log listeners.log; do
     path="$LOG_DIR/$f"
     if [ -f "$path" ]; then
         size_kb=$(( $(stat -c%s "$path") / 1024 ))
@@ -32,4 +33,9 @@ for f in liquidsoap.out select.log web.out catalog.log; do
             echo "$(date -Is) Rotado $f ($size_kb KB) -> $f.old" >> "$LOG_DIR/rotation.log"
         fi
     fi
+done
+
+# Backups viejos de played.*: conservar solo los 3 más recientes
+for pat in 'played.bak.*.txt' 'played.rotate.*.txt' 'played.txt.bak.*' 'played.tsv.bak.*'; do
+    ls -1t "$LOG_DIR"/$pat 2>/dev/null | tail -n +4 | xargs -r rm -f --
 done
